@@ -1,0 +1,55 @@
+:root {
+  color-scheme: light;
+  --bg: #f5f8ff;
+  --panel: #ffffff;
+  --border: #dce5ff;
+  --text: #12203a;
+  --muted: #4e6389;
+  --accent: #1f6feb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  background: linear-gradient(145deg, #f5f8ff, #e8f0ff);
+  color: var(--text);
+}
+
+.app-shell {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.topbar h1 {
+  margin: 0 0 0.4rem 0;
+  color: #0d1a35;
+}
+
+.topbar p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  box-shadow: 0 8px 20px rgba(11, 33, 78, 0.06);
+}
+
+.panel h2 {
+  margin-top: 0;
+}
+
+#status {
+  font-weight: 600;
+  color: var(--accent);
+}

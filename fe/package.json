@@ -1,0 +1,23 @@
+{
+  "name": "vecdb-electron-frontend",
+  "version": "0.1.0",
+  "description": "Basic Electron frontend shell for a vector database",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "keywords": [
+    "electron",
+    "vector-database",
+    "frontend"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.0.0"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
