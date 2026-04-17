@@ -35,7 +35,8 @@ app.patch("/update-image", (_req, res) => {
 });
 
 app.delete("/delete-image", (_req, res) => {
-  // TODO: delete method, deletes image from database
+  // TODO: delete method, deletes image from database. 
+  // User passes in array with at least one id, and it needs to parse through all IDs to get rid of all the images
   res.json({ message: "Deleted Image from database" });
 });
 
