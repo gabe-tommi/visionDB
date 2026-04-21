@@ -27,14 +27,49 @@ body {
   gap: 1rem;
 }
 
+.topbar{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
 .topbar h1 {
   margin: 0 0 0.4rem 0;
   color: #0d1a35;
+  justify-self: start;
+  align-self: center;
+}
+
+.topbar input {
+  width: 100%;
+  max-width: 400px;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 32px;
+  font-size: 1.5rem;
+}
+
+.topbar input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.topbar button {
+  padding: 0.75rem 1rem;
+  width: 100%;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 32px;
+  font-size: 1rem;
+  cursor: pointer;
 }
 
 .topbar p {
   margin: 0;
   color: var(--muted);
+  display: flex;
+  align-items: center;
+  font-size: 1.25rem;
 }
 
 .panel {
@@ -47,6 +82,17 @@ body {
 
 .panel h2 {
   margin-top: 0;
+}
+
+.imgHolder {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+#inputMethods {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
 }
 
 #status {

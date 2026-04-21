@@ -9,23 +9,20 @@
   <body>
     <main class="app-shell">
       <header class="topbar">
-        <h1>VecDb Desktop</h1>
-        <p>Electron starter frontend for your vector database.</p>
+        <h1>VisionDB</h1>
+        <br>
+        <div id="inputMethods">
+          <input type="text" id="query-input" placeholder="Search for..." />
+          <p> or </p>
+          <button id="query-button">Search with Image</button>
+        </div>
+        
       </header>
 
-      <section class="panel">
-        <h2>Status</h2>
-        <p id="status">Initializing...</p>
-      </section>
+      <div id="results" class="results">
 
-      <section class="panel">
-        <h2>Next Steps</h2>
-        <ul>
-          <li>Connect to your API from the renderer process.</li>
-          <li>Add search, insert, and index management views.</li>
-          <li>Expose secure IPC handlers in preload/main.</li>
-        </ul>
-      </section>
+      </div>
+      
     </main>
 
     <script src="./renderer.js"></script>
