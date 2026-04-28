@@ -59,27 +59,123 @@ function ensureModelUsed(modelUsed) {
 }
 
 /*
- * Placeholder hook for text embedding generation.
+ * Lazy-loaded, cached reference to the jina-clip-v2 feature-extraction pipeline.
  *
- * Replace this with your actual model call once you decide where embeddings are
- * produced. For now, the route can still work if the client sends `vector`.
+ * The model is downloaded from Hugging Face on the very first call
+ * and cached in HF_HOME (default: ~/.cache/huggingface). Subsequent calls
+ * reuse the same in-process pipeline instance.
  */
-async function generateTextEmbedding(_text) {
-  throw new Error(
-    "Automatic text embedding generation is not configured yet. Pass a 1024-length `vector`, or implement generateTextEmbedding in /Users/ezedi/Documents/GitHub/visionDB/be/embeddingService.js."
-  );
+let _pipelinePromise = null;
+
+async function getPipeline() {
+  if (!_pipelinePromise) {
+    // Dynamic import keeps the heavy library out of the module parse path
+    // and lets the rest of the server start up before the model is needed.
+    const { pipeline, env } = await import("@huggingface/transformers");
+
+    // Resolve HF_HOME relative to this file's directory, stripping any
+    // leading slash so it's always treated as a relative path.
+    if (process.env.HF_HOME) {
+      const relative = process.env.HF_HOME.replace(/^\/+/, "");
+      env.cacheDir = require("path").resolve(__dirname, relative);
+    }
+
+    _pipelinePromise = pipeline("feature-extraction", "jinaai/jina-clip-v2", {
+      dtype: "fp32",
+    });
+  }
+
+  return _pipelinePromise;
 }
 
 /*
- * Placeholder hook for image embedding generation.
+ * Extracts a flat JS number array from a Transformers.js tensor and truncates
+ * it to EMBEDDING_DIMENSION using Matryoshka Representation Learning.
  *
- * Replace this with your real image embedding pipeline. The rest of the backend
- * is already shaped so you only need to change this function later.
+ * jina-embeddings-v4 natively supports Matryoshka truncation: the first N
+ * dimensions of the full 2048-dim output form a valid, independently useful
+ * embedding. Slicing to 1024 retains strong retrieval quality while matching
+ * the existing schema column size.
  */
-async function generateImageEmbedding(_input) {
-  throw new Error(
-    "Automatic image embedding generation is not configured yet. Pass a 1024-length `vector`, or implement generateImageEmbedding in /Users/ezedi/Documents/GitHub/visionDB/be/embeddingService.js."
-  );
+function tensorToArray(tensor) {
+  let full;
+
+  // Mean-pool over the token dimension when shape is [1, tokens, dim].
+  if (tensor.dims.length === 3) {
+    const [, seqLen, dim] = tensor.dims;
+    const data = tensor.data;
+    const result = new Array(dim).fill(0);
+    for (let t = 0; t < seqLen; t++) {
+      for (let d = 0; d < dim; d++) {
+        result[d] += data[t * dim + d];
+      }
+    }
+    for (let d = 0; d < dim; d++) {
+      result[d] /= seqLen;
+    }
+    full = result;
+  } else {
+    // Shape is already [1, dim] — squeeze batch dimension.
+    full = Array.from(tensor.data);
+  }
+
+  // Matryoshka truncation: keep only the first EMBEDDING_DIMENSION values.
+  return full.length > EMBEDDING_DIMENSION
+    ? full.slice(0, EMBEDDING_DIMENSION)
+    : full;
+}
+
+/*
+ * Generates a 1024-dimensional text embedding using jina-clip-v2.
+ *
+ * The model outputs 1024 dims natively, matching the schema column size.
+ */
+async function generateTextEmbedding(text) {
+  const extractor = await getPipeline();
+  const output = await extractor(text, {
+    pooling: "mean",
+    normalize: true,
+  });
+  return tensorToArray(output);
+}
+
+/*
+ * Generates a 1024-dimensional multimodal embedding using jina-clip-v2.
+ *
+ * Supports both text and image inputs. When an imageUrl is provided the model
+ * encodes the image directly. Falls back to a text embedding of description
+ * if image encoding fails.
+ */
+async function generateImageEmbedding({ imageUrl, description }) {
+  const extractor = await getPipeline();
+  const { RawImage } = await import("@huggingface/transformers");
+
+  try {
+    const image = await RawImage.fromURL(imageUrl);
+    const output = await extractor(image, {
+      pooling: "mean",
+      normalize: true,
+    });
+    return tensorToArray(output);
+  } catch (visionError) {
+    // Vision encoder not available in this ONNX export — fall back to text.
+    if (!description) {
+      throw new Error(
+        `Image embedding failed and no description was provided as fallback. Original error: ${visionError.message}`
+      );
+    }
+
+    console.warn(
+      "[embeddingService] Vision encoder unavailable, falling back to text embedding of description:",
+      visionError.message
+    );
+
+    const output = await extractor(description, {
+      pooling: "mean",
+      normalize: true,
+    });
+    return tensorToArray(output);
+  }
 }
 
 /*
@@ -182,6 +278,7 @@ async function resolveImageSearchEmbedding(payload) {
 
 module.exports = {
   EMBEDDING_DIMENSION,
+  getPipeline,
   resolveImageSearchEmbedding,
   resolveStoredEmbedding,
   resolveTextSearchEmbedding,

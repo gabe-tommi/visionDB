@@ -1,8 +1,12 @@
 require("dotenv").config({ path: `${__dirname}/.env` });
 
+
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 const { getFirebaseAuth } = require("./firebaseAdmin");
 const {
+  getPipeline,
   resolveImageSearchEmbedding,
   resolveStoredEmbedding,
   resolveTextSearchEmbedding,
@@ -16,6 +20,7 @@ const {
   updateImageRecord,
   upsertEmbeddingForImage,
 } = require("./visionDbRepository");
+const { seedSampleImages } = require("./seedImages");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -411,4 +416,22 @@ app.use((error, _req, res, _next) => {
 
 app.listen(PORT, () => {
   console.log(`Backend listening on http://localhost:${PORT}`);
-});
+  if (process.env.HF_HOME) {
+    // Strip any leading slash so the value is always treated as relative to
+    // the server's directory, regardless of how it was written in .env.
+    const relative = process.env.HF_HOME.replace(/^\/+/, "");
+    const cacheDir = path.resolve(__dirname, relative);
+    fs.mkdirSync(cacheDir, { recursive: true });
+    console.log(`[embeddingService] Model cache directory: ${cacheDir}`);
+  }
+  // Trigger model download/load at startup so the first real request
+  // doesn't stall while the ~2-3 GB Jina v4 weights are fetched.
+  getPipeline()
+    .then(() => {
+      console.log("[embeddingService] jina-clip-v2 ready.");
+      return seedSampleImages();
+    })
+    .catch((err) => console.error("[embeddingService] Model warmup failed:", err.message));
+
+  });
+
