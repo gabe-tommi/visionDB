@@ -2,9 +2,11 @@ require("dotenv").config({ path: `${__dirname}/.env` });
 
 
 const express = require("express");
+const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
-const { getFirebaseAuth } = require("./firebaseAdmin");
+const { getFirebaseAuth, getStorageBucket } = require("./firebaseAdmin");
 const {
   getPipeline,
   resolveImageSearchEmbedding,
@@ -24,6 +26,22 @@ const { seedSampleImages } = require("./seedImages");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PATCH, DELETE, OPTIONS"
+  );
+
+  if (req.method === "OPTIONS") {
+    res.status(204).end();
+    return;
+  }
+
+  next();
+});
 
 app.use(express.json());
 
@@ -222,6 +240,154 @@ function buildImagePatch(payload) {
   };
 }
 
+function safeStorageName(filename) {
+  return path
+    .basename(filename || "image")
+    .replace(/[^a-z0-9._-]+/gi, "-")
+    .replace(/^-+|-+$/g, "") || "image";
+}
+
+function descriptionFromFilename(filename) {
+  return path
+    .basename(filename, path.extname(filename))
+    .replace(/[_-]+/g, " ")
+    .trim();
+}
+
+function parseContentDisposition(value) {
+  const result = {};
+
+  for (const part of value.split(";")) {
+    const [rawKey, ...rawValue] = part.trim().split("=");
+    if (!rawValue.length) {
+      continue;
+    }
+
+    result[rawKey.toLowerCase()] = rawValue
+      .join("=")
+      .trim()
+      .replace(/^"|"$/g, "");
+  }
+
+  return result;
+}
+
+function splitMultipartBody(body, boundary) {
+  const delimiter = Buffer.from(`--${boundary}`);
+  const parts = [];
+  let searchFrom = 0;
+
+  while (searchFrom < body.length) {
+    const start = body.indexOf(delimiter, searchFrom);
+    if (start === -1) {
+      break;
+    }
+
+    const nextStart = body.indexOf(delimiter, start + delimiter.length);
+    if (nextStart === -1) {
+      break;
+    }
+
+    let partStart = start + delimiter.length;
+    if (body[partStart] === 45 && body[partStart + 1] === 45) {
+      break;
+    }
+
+    if (body[partStart] === 13 && body[partStart + 1] === 10) {
+      partStart += 2;
+    }
+
+    let partEnd = nextStart;
+    if (body[partEnd - 2] === 13 && body[partEnd - 1] === 10) {
+      partEnd -= 2;
+    }
+
+    parts.push(body.subarray(partStart, partEnd));
+    searchFrom = nextStart;
+  }
+
+  return parts;
+}
+
+function parseMultipartFiles(req) {
+  return new Promise((resolve, reject) => {
+    const contentType = req.headers["content-type"] || "";
+    const match = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+
+    if (!match) {
+      reject(createHttpError(400, "Expected multipart form data with a boundary."));
+      return;
+    }
+
+    const boundary = match[1] || match[2];
+    const chunks = [];
+
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("error", reject);
+    req.on("end", () => {
+      const body = Buffer.concat(chunks);
+      const files = [];
+
+      for (const part of splitMultipartBody(body, boundary)) {
+        const headerEnd = part.indexOf(Buffer.from("\r\n\r\n"));
+        if (headerEnd === -1) {
+          continue;
+        }
+
+        const rawHeaders = part.subarray(0, headerEnd).toString("utf8");
+        const content = part.subarray(headerEnd + 4);
+        const headers = Object.fromEntries(
+          rawHeaders.split("\r\n").map((line) => {
+            const separator = line.indexOf(":");
+            return [
+              line.slice(0, separator).trim().toLowerCase(),
+              line.slice(separator + 1).trim(),
+            ];
+          })
+        );
+        const disposition = parseContentDisposition(
+          headers["content-disposition"] || ""
+        );
+
+        if (!disposition.filename || !content.length) {
+          continue;
+        }
+
+        files.push({
+          fieldName: disposition.name,
+          originalName: disposition.filename,
+          contentType: headers["content-type"] || "application/octet-stream",
+          buffer: content,
+        });
+      }
+
+      resolve(files);
+    });
+  });
+}
+
+function isMultipartRequest(req) {
+  return (req.headers["content-type"] || "").startsWith("multipart/form-data");
+}
+
+async function uploadBufferToFirebase({ buffer, filename, contentType }) {
+  const bucket = getStorageBucket();
+  const safeName = safeStorageName(filename);
+  const destination = `uploadedImages/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
+  const file = bucket.file(destination);
+
+  await file.save(buffer, {
+    metadata: { contentType },
+    resumable: false,
+  });
+  await file.makePublic();
+
+  return {
+    file,
+    imageUrl: `https://storage.googleapis.com/${bucket.name}/${destination}`,
+  };
+}
+
 /*
  * Optional Firebase Auth middleware.
  *
@@ -314,6 +480,38 @@ async function handleSearchByText(req, res) {
 }
 
 async function handleSearchByImage(req, res) {
+  if (isMultipartRequest(req)) {
+    const files = await parseMultipartFiles(req);
+    const file = files[0];
+
+    if (!file) {
+      throw createHttpError(400, "Select an image file to search with.");
+    }
+
+    const tempDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "visiondb-search-")
+    );
+    const tempPath = path.join(tempDir, safeStorageName(file.originalName));
+
+    try {
+      await fs.promises.writeFile(tempPath, file.buffer);
+
+      const embedding = await resolveImageSearchEmbedding({
+        imageUrl: tempPath,
+        description: descriptionFromFilename(file.originalName),
+      });
+      const matches = await searchImagesByVector({
+        vector: embedding.vector,
+        limit: 5,
+      });
+
+      res.json({ matches });
+      return;
+    } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
   const payload = getPayload(req);
   const embedding = await resolveImageSearchEmbedding(payload);
   const matches = await searchImagesByVector({
@@ -373,6 +571,95 @@ async function handleDeleteImages(req, res) {
   res.json({ deletedIds });
 }
 
+async function handleUploadImages(req, res) {
+  const files = await parseMultipartFiles(req);
+
+  if (!files.length) {
+    throw createHttpError(400, "Select at least one image file to upload.");
+  }
+
+  const results = [];
+
+  for (const file of files) {
+    const tempDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "visiondb-upload-")
+    );
+    const tempPath = path.join(tempDir, safeStorageName(file.originalName));
+    let uploadedStorageFile = null;
+
+    try {
+      if (!file.contentType.startsWith("image/")) {
+        throw createHttpError(400, `${file.originalName} is not an image.`);
+      }
+
+      await fs.promises.writeFile(tempPath, file.buffer);
+
+      const description = descriptionFromFilename(file.originalName);
+      const embedding = await resolveStoredEmbedding({
+        imageUrl: tempPath,
+        description,
+      });
+      const uploaded = await uploadBufferToFirebase({
+        buffer: file.buffer,
+        filename: file.originalName,
+        contentType: file.contentType,
+      });
+      uploadedStorageFile = uploaded.file;
+      const createdImage = await createImageRecord({
+        imageUrl: uploaded.imageUrl,
+        description,
+        metadata: JSON.stringify({
+          originalName: file.originalName,
+          contentType: file.contentType,
+          size: file.buffer.length,
+        }),
+        createdAt: new Date().toISOString(),
+      });
+
+      await upsertEmbeddingForImage(createdImage.id, {
+        vector: embedding.vector,
+        dimension: embedding.dimension,
+        modelUsed: embedding.modelUsed,
+        generatedAt: new Date().toISOString(),
+      });
+
+      results.push({
+        filename: file.originalName,
+        status: "uploaded",
+        image: await getImageById(createdImage.id),
+      });
+    } catch (error) {
+      if (uploadedStorageFile) {
+        try {
+          await uploadedStorageFile.delete({ ignoreNotFound: true });
+        } catch (deleteError) {
+          console.warn(
+            `[upload] Could not clean up ${file.originalName}: ${deleteError.message}`
+          );
+        }
+      }
+
+      results.push({
+        filename: file.originalName,
+        status: "failed",
+        error: error.message,
+      });
+    } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  const uploaded = results.filter((result) => result.status === "uploaded");
+  const failed = results.filter((result) => result.status === "failed");
+  const statusCode = uploaded.length ? 201 : 400;
+
+  res.status(statusCode).json({
+    uploaded: uploaded.length,
+    failed: failed.length,
+    results,
+  });
+}
+
 app.get("/", (_req, res) => {
   res.json({ message: "VecDb backend is running" });
 });
@@ -383,6 +670,7 @@ app.get("/", (_req, res) => {
  * breaking your existing frontend calls.
  */
 app.post("/add-image", asyncHandler(handleCreateImage));
+app.post("/upload-images", asyncHandler(handleUploadImages));
 app.get("/get-all-images", asyncHandler(handleListImages));
 app.all("/get-image-by-image", asyncHandler(handleSearchByImage));
 app.all("/get-image-by-text", asyncHandler(handleSearchByText));
@@ -390,6 +678,7 @@ app.patch("/update-image", asyncHandler(handleUpdateImage));
 app.delete("/delete-image", asyncHandler(handleDeleteImages));
 
 app.post("/images", asyncHandler(handleCreateImage));
+app.post("/images/upload", asyncHandler(handleUploadImages));
 app.get("/images", asyncHandler(handleListImages));
 app.post("/images/search/image", asyncHandler(handleSearchByImage));
 app.post("/images/search/text", asyncHandler(handleSearchByText));
@@ -434,4 +723,3 @@ app.listen(PORT, () => {
     .catch((err) => console.error("[embeddingService] Model warmup failed:", err.message));
 
   });
-

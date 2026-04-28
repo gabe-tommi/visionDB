@@ -20,7 +20,6 @@ body {
 }
 
 .app-shell {
-  max-width: 900px;
   margin: 0 auto;
   padding: 2rem 1rem;
   display: grid;
@@ -32,6 +31,7 @@ body {
   flex-direction: column;
   align-items: center;
 }
+
 .topbar h1 {
   margin: 0 0 0.4rem 0;
   color: #0d1a35;
@@ -40,8 +40,9 @@ body {
 }
 
 .topbar input {
-  width: 100%;
-  max-width: 400px;
+  flex: 1 1 380px;
+  min-width: 280px;
+  max-width: 720px;
   padding: 0.5rem 1rem;
   border: 1px solid var(--border);
   border-radius: 32px;
@@ -62,6 +63,36 @@ body {
   border-radius: 32px;
   font-size: 1rem;
   cursor: pointer;
+}
+
+.topbar button:disabled,
+.topbar button.is-uploading {
+  background: #8d98ad;
+  cursor: not-allowed;
+  opacity: 0.78;
+}
+
+.topbar button.is-uploading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+}
+
+.upload-spinner {
+  width: 1.05rem;
+  height: 1.05rem;
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  border-top-color: #fff;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  animation: upload-spin 0.8s linear infinite;
+}
+
+@keyframes upload-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .topbar p {
@@ -95,7 +126,26 @@ body {
   align-items: center;
 }
 
+.topbar input,
+.topbar button {
+  height: 3.2rem;
+  min-height: 3.2rem;
+}
+
+.topbar input {
+  flex: 1 1 380px;
+  min-width: 280px;
+  max-width: 720px;
+  padding: 0 1rem;
+}
+
+.topbar button {
+  padding: 0 1rem;
+}
+
 #status {
+  min-height: 1.5rem;
+  margin-top: 0.75rem;
   font-weight: 600;
   color: var(--accent);
 }
