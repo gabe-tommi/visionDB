@@ -120,6 +120,64 @@ body {
   border-radius: 8px;
 }
 
+.results {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: 1rem;
+  width: 100%;
+  margin-top: 1rem;
+}
+
+.result-card {
+  flex: 1 1 220px;
+  max-width: 280px;
+  min-width: 180px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 20px rgba(11, 33, 78, 0.06);
+}
+
+.result-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: #edf2ff;
+}
+
+.result-details {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem;
+}
+
+.result-details h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.result-score,
+.empty-results {
+  margin: 0;
+  color: var(--muted);
+}
+
+.result-score {
+  font-size: 0.85rem;
+}
+
+.empty-results {
+  width: 100%;
+  text-align: center;
+  font-size: 1rem;
+}
+
 #inputMethods {
   display: flex;
   gap: 1rem;

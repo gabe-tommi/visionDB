@@ -59,28 +59,31 @@ function ensureModelUsed(modelUsed) {
 }
 
 /*
- * Lazy-loaded, cached reference to the jina-clip-v2 feature-extraction pipeline.
+ * Lazy-loaded text encoder for jina-clip-v2.
  *
- * Used for text embeddings only. The model is downloaded from Hugging Face
- * on the very first call and cached. Subsequent calls reuse the instance.
+ * We use AutoTokenizer + AutoModel directly instead of the higher-level
+ * pipeline helper because the pipeline's built-in mean pooling path has been
+ * throwing on this model during text search in this app.
  */
-let _pipelinePromise = null;
+let _textModelPromise = null;
 
 async function getPipeline() {
-  if (!_pipelinePromise) {
-    const { pipeline, env } = await import("@huggingface/transformers");
+  if (!_textModelPromise) {
+    const { AutoModel, AutoTokenizer, env } = await import("@huggingface/transformers");
 
     if (process.env.HF_HOME) {
       const relative = process.env.HF_HOME.replace(/^\/+/, "");
       env.cacheDir = require("path").resolve(__dirname, relative);
     }
 
-    _pipelinePromise = pipeline("feature-extraction", "jinaai/jina-clip-v2", {
-      dtype: "fp32",
-    });
+    const modelId = "jinaai/jina-clip-v2";
+    _textModelPromise = Promise.all([
+      AutoModel.from_pretrained(modelId, { dtype: "fp32" }),
+      AutoTokenizer.from_pretrained(modelId),
+    ]).then(([model, tokenizer]) => ({ model, tokenizer }));
   }
 
-  return _pipelinePromise;
+  return _textModelPromise;
 }
 
 /*
@@ -148,18 +151,46 @@ function tensorToArray(tensor) {
     : full;
 }
 
+function normalizeL2(vector) {
+  const magnitude = Math.sqrt(
+    vector.reduce((sum, value) => sum + value * value, 0)
+  );
+
+  if (!magnitude) {
+    return vector;
+  }
+
+  return vector.map((value) => value / magnitude);
+}
+
 /*
  * Generates a 1024-dimensional text embedding using jina-clip-v2.
  *
  * The model outputs 1024 dims natively, matching the schema column size.
  */
 async function generateTextEmbedding(text) {
-  const extractor = await getPipeline();
-  const output = await extractor(text, {
-    pooling: "mean",
-    normalize: true,
-  });
-  return tensorToArray(output);
+  const { model, tokenizer } = await getPipeline();
+  const inputs = await tokenizer([text], { padding: true, truncation: true });
+  const output = await model(inputs);
+  const textEmbedding =
+    output.l2norm_text_embeddings ||
+    output.text_embeddings ||
+    output.text_embeds;
+
+  if (textEmbedding?.data) {
+    const full = Array.from(textEmbedding.data);
+    const vector =
+      full.length > EMBEDDING_DIMENSION ? full.slice(0, EMBEDDING_DIMENSION) : full;
+    return vector;
+  }
+
+  if (output.last_hidden_state?.data) {
+    return normalizeL2(tensorToArray(output.last_hidden_state));
+  }
+
+  throw new Error(
+    `text embedding missing from model output. Keys: ${Object.keys(output || {}).join(", ")}`
+  );
 }
 
 /*
@@ -209,12 +240,7 @@ async function generateImageEmbedding({ imageUrl, description }) {
       visionError.message
     );
 
-    const extractor = await getPipeline();
-    const output = await extractor(description, {
-      pooling: "mean",
-      normalize: true,
-    });
-    return tensorToArray(output);
+    return generateTextEmbedding(description);
   }
 }
 

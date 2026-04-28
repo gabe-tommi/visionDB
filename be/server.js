@@ -472,11 +472,11 @@ async function handleSearchByText(req, res) {
   const embedding = await resolveTextSearchEmbedding(payload);
   const matches = await searchImagesByVector({
     vector: embedding.vector,
-    limit: normalizeLimit(payload.limit, 5),
+    limit: normalizeLimit(payload.limit, 50),
     within: normalizeWithin(payload.within),
   });
 
-  res.json({ matches });
+  res.json({ matches, total: matches.length });
 }
 
 async function handleSearchByImage(req, res) {
@@ -502,10 +502,11 @@ async function handleSearchByImage(req, res) {
       });
       const matches = await searchImagesByVector({
         vector: embedding.vector,
-        limit: 5,
+        limit: normalizeLimit(req.query.limit, 50),
+        within: normalizeWithin(req.query.within),
       });
 
-      res.json({ matches });
+      res.json({ matches, total: matches.length });
       return;
     } finally {
       await fs.promises.rm(tempDir, { recursive: true, force: true });
@@ -516,11 +517,11 @@ async function handleSearchByImage(req, res) {
   const embedding = await resolveImageSearchEmbedding(payload);
   const matches = await searchImagesByVector({
     vector: embedding.vector,
-    limit: normalizeLimit(payload.limit, 5),
+    limit: normalizeLimit(payload.limit, 50),
     within: normalizeWithin(payload.within),
   });
 
-  res.json({ matches });
+  res.json({ matches, total: matches.length });
 }
 
 async function handleUpdateImage(req, res) {
@@ -699,6 +700,8 @@ app.get("/health", (_req, res) => {
 app.use((error, _req, res, _next) => {
   const statusCode = error.statusCode || 500;
   const message = error.message || "Internal server error";
+
+  console.error("[server]", error.stack || error);
 
   res.status(statusCode).json({ error: message });
 });

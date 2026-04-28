@@ -5,6 +5,7 @@ const API_BASE_URL = "http://localhost:3001";
 const queryInput = document.getElementById("query-input");
 const queryButton = document.getElementById("query-button");
 const uploadButton = document.getElementById("upload-button");
+const resultsEl = document.getElementById("results");
 
 function setStatus(message) {
   if (statusEl) {
@@ -27,6 +28,92 @@ function setUploadButtonState(isUploading, total = 0) {
   uploadButton.innerHTML = '<span class="upload-label">Upload Images</span>';
 }
 
+function clearResults() {
+  if (resultsEl) {
+    resultsEl.replaceChildren();
+  }
+}
+
+function getMatchImage(match) {
+  return match.image || match;
+}
+
+function formatSimilarity(value) {
+  if (typeof value !== "number") {
+    return "";
+  }
+
+  return `${Math.round(value * 100)}% match`;
+}
+
+function renderResults(matches = []) {
+  clearResults();
+
+  if (!resultsEl) {
+    return;
+  }
+
+  if (!matches.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-results";
+    empty.textContent = "No matching images found.";
+    resultsEl.appendChild(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+
+  matches.forEach((match) => {
+    const image = getMatchImage(match);
+    if (!image?.imageUrl) {
+      return;
+    }
+
+    const card = document.createElement("article");
+    card.className = "result-card";
+
+    const img = document.createElement("img");
+    img.src = image.imageUrl;
+    img.alt = image.description || "VisionDB result";
+    img.loading = "lazy";
+
+    const details = document.createElement("div");
+    details.className = "result-details";
+
+    const title = document.createElement("h2");
+    title.textContent = image.description || "Untitled image";
+
+    const score = document.createElement("p");
+    score.className = "result-score";
+    score.textContent = formatSimilarity(match.similarity);
+
+    details.append(title, score);
+    card.append(img, details);
+    fragment.appendChild(card);
+  });
+
+  resultsEl.appendChild(fragment);
+}
+
+async function parseJsonResponse(response) {
+  const bodyText = await response.text();
+  let result = {};
+
+  if (bodyText) {
+    try {
+      result = JSON.parse(bodyText);
+    } catch (_error) {
+      result = { error: bodyText };
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(result.error || "Request failed.");
+  }
+
+  return result;
+}
+
 queryButton.addEventListener("click", () => {
   const fileInput = document.createElement("input");
   fileInput.type = "file";
@@ -37,18 +124,21 @@ queryButton.addEventListener("click", () => {
     
     const formData = new FormData();
     formData.append("image", file);
+    clearResults();
+    setStatus("Searching by image...");
     
     try {
       const response = await fetch(`${API_BASE_URL}/get-image-by-image`, {
         method: "POST",
         body: formData
       });
-      const result = await response.json();
+      const result = await parseJsonResponse(response);
       console.log("Result:", result);
-      setStatus(JSON.stringify(result));
+      renderResults(result.matches);
+      setStatus(`${result.total || result.matches?.length || 0} images ranked by similarity.`);
     } catch (error) {
       console.error("Error:", error);
-      setStatus("Error processing image");
+      setStatus(error.message || "Error processing image");
     }
   };
   fileInput.click();
@@ -102,7 +192,9 @@ queryInput.addEventListener("keypress", async (event) => {
     const query = queryInput.value;
     if (!query) return;
 
-    // Handle the query input here
+    clearResults();
+    setStatus("Searching by text...");
+
     try {
       const response = await fetch(`${API_BASE_URL}/get-image-by-text`, {
         method: "POST",
@@ -111,12 +203,13 @@ queryInput.addEventListener("keypress", async (event) => {
         },
         body: JSON.stringify({ queryText: query })
       });
-      const result = await response.json();
+      const result = await parseJsonResponse(response);
       console.log("Result:", result);
-      setStatus(JSON.stringify(result));
+      renderResults(result.matches);
+      setStatus(`${result.total || result.matches?.length || 0} images ranked by similarity.`);
     } catch (error) {
       console.error("Error:", error);
-      setStatus("Error processing search");
+      setStatus(error.message || "Error processing search");
     }
 
   }
