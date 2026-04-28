@@ -80,7 +80,10 @@ async function seedSampleImages() {
     try {
       const imageUrl = await uploadToFirebase(filePath, filename);
 
-      const embedding = await resolveStoredEmbedding({ imageUrl });
+      // Use the local file for embedding (reliable, no network round-trip).
+      console.log(`[seed] Generating embedding for: ${filePath}`);
+      const embedding = await resolveStoredEmbedding({ imageUrl: filePath });
+      console.log(`[seed] Embedding ready — dim: ${embedding.vector.length}, first 5: [${embedding.vector.slice(0, 5).map(v => v.toFixed(6)).join(', ')}]`);
     // for image table updates
       const created = await createImageRecord({
         imageUrl,

@@ -61,20 +61,15 @@ function ensureModelUsed(modelUsed) {
 /*
  * Lazy-loaded, cached reference to the jina-clip-v2 feature-extraction pipeline.
  *
- * The model is downloaded from Hugging Face on the very first call
- * and cached in HF_HOME (default: ~/.cache/huggingface). Subsequent calls
- * reuse the same in-process pipeline instance.
+ * Used for text embeddings only. The model is downloaded from Hugging Face
+ * on the very first call and cached. Subsequent calls reuse the instance.
  */
 let _pipelinePromise = null;
 
 async function getPipeline() {
   if (!_pipelinePromise) {
-    // Dynamic import keeps the heavy library out of the module parse path
-    // and lets the rest of the server start up before the model is needed.
     const { pipeline, env } = await import("@huggingface/transformers");
 
-    // Resolve HF_HOME relative to this file's directory, stripping any
-    // leading slash so it's always treated as a relative path.
     if (process.env.HF_HOME) {
       const relative = process.env.HF_HOME.replace(/^\/+/, "");
       env.cacheDir = require("path").resolve(__dirname, relative);
@@ -86,6 +81,34 @@ async function getPipeline() {
   }
 
   return _pipelinePromise;
+}
+
+/*
+ * Lazy-loaded AutoModel + AutoProcessor for jina-clip-v2 image encoding.
+ *
+ * The pipeline API does not support RawImage inputs for this model.
+ * Using AutoModel directly gives us the `image_embeds` output which is
+ * already CLS-pooled to [batch, 1024].
+ */
+let _visionModelPromise = null;
+
+async function getVisionModel() {
+  if (!_visionModelPromise) {
+    const { AutoModel, AutoProcessor, env } = await import("@huggingface/transformers");
+
+    if (process.env.HF_HOME) {
+      const relative = process.env.HF_HOME.replace(/^\/+/, "");
+      env.cacheDir = require("path").resolve(__dirname, relative);
+    }
+
+    const modelId = "jinaai/jina-clip-v2";
+    _visionModelPromise = Promise.all([
+      AutoModel.from_pretrained(modelId, { dtype: "fp32" }),
+      AutoProcessor.from_pretrained(modelId),
+    ]).then(([model, processor]) => ({ model, processor }));
+  }
+
+  return _visionModelPromise;
 }
 
 /*
@@ -140,25 +163,35 @@ async function generateTextEmbedding(text) {
 }
 
 /*
- * Generates a 1024-dimensional multimodal embedding using jina-clip-v2.
+ * Generates a 1024-dimensional image embedding using jina-clip-v2.
  *
- * Supports both text and image inputs. When an imageUrl is provided the model
- * encodes the image directly. Falls back to a text embedding of description
- * if image encoding fails.
+ * Uses AutoModel + AutoProcessor directly because the feature-extraction
+ * pipeline does not support RawImage inputs. The model returns `image_embeds`
+ * which is already pooled to shape [batch, 1024].
  */
 async function generateImageEmbedding({ imageUrl, description }) {
-  const extractor = await getPipeline();
   const { RawImage } = await import("@huggingface/transformers");
 
   try {
-    const image = await RawImage.fromURL(imageUrl);
-    const output = await extractor(image, {
-      pooling: "mean",
-      normalize: true,
-    });
-    return tensorToArray(output);
+    console.log(`[embeddingService] Loading image from: ${imageUrl}`);
+    const image = await RawImage.read(imageUrl);
+    console.log(`[embeddingService] Image loaded (${image.width}x${image.height}), encoding...`);
+
+    const { model, processor } = await getVisionModel();
+    const inputs = await processor(null, [image], { padding: true, truncation: true });
+    const { image_embeds } = await model(inputs);
+
+    if (!image_embeds || !image_embeds.dims) {
+      throw new Error(`image_embeds missing from model output. Keys: ${Object.keys(model.output || {})}`);
+    }
+
+    // image_embeds shape is [batch=1, dim] — squeeze batch dimension.
+    const full = Array.from(image_embeds.data);
+    const vector = full.length > EMBEDDING_DIMENSION ? full.slice(0, EMBEDDING_DIMENSION) : full;
+    console.log(`[embeddingService] Embedding OK — dim: ${vector.length}, first 5: [${vector.slice(0, 5).map(v => v.toFixed(6)).join(', ')}]`);
+    return vector;
   } catch (visionError) {
-    // Vision encoder not available in this ONNX export — fall back to text.
+    console.error(`[embeddingService] Image embedding threw:`, visionError);
     if (!description) {
       throw new Error(
         `Image embedding failed and no description was provided as fallback. Original error: ${visionError.message}`
@@ -166,10 +199,11 @@ async function generateImageEmbedding({ imageUrl, description }) {
     }
 
     console.warn(
-      "[embeddingService] Vision encoder unavailable, falling back to text embedding of description:",
+      "[embeddingService] Vision encoder failed, falling back to text embedding of description:",
       visionError.message
     );
 
+    const extractor = await getPipeline();
     const output = await extractor(description, {
       pooling: "mean",
       normalize: true,
