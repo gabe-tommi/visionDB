@@ -87,8 +87,8 @@ async function getPipeline() {
  * Lazy-loaded AutoModel + AutoProcessor for jina-clip-v2 image encoding.
  *
  * The pipeline API does not support RawImage inputs for this model.
- * Using AutoModel directly gives us the `image_embeds` output which is
- * already CLS-pooled to [batch, 1024].
+ * Using AutoModel directly gives us the Jina image embedding outputs, already
+ * pooled to [batch, 1024].
  */
 let _visionModelPromise = null;
 
@@ -166,8 +166,8 @@ async function generateTextEmbedding(text) {
  * Generates a 1024-dimensional image embedding using jina-clip-v2.
  *
  * Uses AutoModel + AutoProcessor directly because the feature-extraction
- * pipeline does not support RawImage inputs. The model returns `image_embeds`
- * which is already pooled to shape [batch, 1024].
+ * pipeline does not support RawImage inputs. The model returns normalized
+ * image embeddings pooled to shape [batch, 1024].
  */
 async function generateImageEmbedding({ imageUrl, description }) {
   const { RawImage } = await import("@huggingface/transformers");
@@ -179,14 +179,20 @@ async function generateImageEmbedding({ imageUrl, description }) {
 
     const { model, processor } = await getVisionModel();
     const inputs = await processor(null, [image], { padding: true, truncation: true });
-    const { image_embeds } = await model(inputs);
+    const output = await model(inputs);
+    const imageEmbedding =
+      output.l2norm_image_embeddings ||
+      output.image_embeddings ||
+      output.image_embeds;
 
-    if (!image_embeds || !image_embeds.dims) {
-      throw new Error(`image_embeds missing from model output. Keys: ${Object.keys(model.output || {})}`);
+    if (!imageEmbedding || !imageEmbedding.dims) {
+      throw new Error(
+        `image embedding missing from model output. Keys: ${Object.keys(output || {}).join(", ")}`
+      );
     }
 
-    // image_embeds shape is [batch=1, dim] — squeeze batch dimension.
-    const full = Array.from(image_embeds.data);
+    // Image embedding shape is [batch=1, dim] — squeeze batch dimension.
+    const full = Array.from(imageEmbedding.data);
     const vector = full.length > EMBEDDING_DIMENSION ? full.slice(0, EMBEDDING_DIMENSION) : full;
     console.log(`[embeddingService] Embedding OK — dim: ${vector.length}, first 5: [${vector.slice(0, 5).map(v => v.toFixed(6)).join(', ')}]`);
     return vector;
