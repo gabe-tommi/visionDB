@@ -34,12 +34,30 @@ async function runAdminGraphql(query, variables, { readOnly = false } = {}) {
     options.variables = variables;
   }
 
-  const response = readOnly
-    ? await sqlConnect.executeGraphqlRead(query, options)
-    : await sqlConnect.executeGraphql(query, options);
+  let response;
+
+  if (readOnly) {
+    try {
+      response = await sqlConnect.executeGraphqlRead(query, options);
+    } catch (error) {
+      // Some Data Connect query shapes, including vector similarity in this app,
+      // are more reliable through the generic execution path than the read-only helper.
+      console.warn(
+        "[sqlConnect] executeGraphqlRead failed, retrying with executeGraphql:",
+        error?.message || error
+      );
+      response = await sqlConnect.executeGraphql(query, options);
+    }
+  } else {
+    response = await sqlConnect.executeGraphql(query, options);
+  }
 
   if (response?.errors?.length) {
     throw new Error(formatGraphqlErrors(response.errors));
+  }
+
+  if (!response) {
+    throw new Error("SQL Connect returned no response.");
   }
 
   return response?.data || {};

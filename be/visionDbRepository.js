@@ -15,44 +15,62 @@ const { runAdminGraphql } = require("./sqlConnect");
  *   `embeddings_on_image`
  */
 const CREATE_IMAGE_MUTATION = `
-  mutation CreateImage($data: Image_Data!) {
-    image_insert(data: $data) {
-      id
-    }
+  mutation CreateImage(
+    $imageUrl: String!
+    $description: String
+    $tags: [String!]
+    $metadata: String
+    $createdAt: Timestamp
+  ) {
+    image_insert(data: {
+      imageUrl: $imageUrl
+      description: $description
+      tags: $tags
+      metadata: $metadata
+      createdAt: $createdAt
+    })
   }
 `;
 
 const CREATE_EMBEDDING_MUTATION = `
-  mutation CreateEmbedding($data: Embedding_Data!) {
-    embedding_insert(data: $data) {
-      id
-    }
-  }
-`;
-
-const UPDATE_IMAGE_MUTATION = `
-  mutation UpdateImage($id: UUID!, $data: Image_Data!) {
-    image_update(id: $id, data: $data) {
-      id
-    }
-  }
-`;
-
-const UPDATE_EMBEDDING_MUTATION = `
-  mutation UpdateEmbedding($id: UUID!, $data: Embedding_Data!) {
-    embedding_update(id: $id, data: $data) {
-      id
-    }
+  mutation CreateEmbedding(
+    $imageId: UUID!
+    $vector: Vector
+    $dimension: Int!
+    $modelUsed: String!
+    $generatedAt: Timestamp
+  ) {
+    embedding_insert(data: {
+      imageId: $imageId
+      vector: $vector
+      dimension: $dimension
+      modelUsed: $modelUsed
+      generatedAt: $generatedAt
+    })
   }
 `;
 
 const DELETE_IMAGE_MUTATION = `
   mutation DeleteImage($id: UUID!) {
-    image_delete(id: $id) {
-      id
-    }
+    image_delete(id: $id)
   }
 `;
+
+const IMAGE_UPDATE_VARIABLE_TYPES = {
+  imageUrl: "String",
+  description: "String",
+  tags: "[String!]",
+  metadata: "String",
+  createdAt: "Timestamp",
+};
+
+const EMBEDDING_UPDATE_VARIABLE_TYPES = {
+  imageId: "UUID",
+  vector: "Vector",
+  dimension: "Int",
+  modelUsed: "String",
+  generatedAt: "Timestamp",
+};
 
 const GET_IMAGE_QUERY = `
   query GetImage($id: UUID!) {
@@ -132,20 +150,79 @@ function stripUndefined(object) {
   );
 }
 
+function buildUpdateMutation({
+  operationName,
+  fieldName,
+  variableTypes,
+  data,
+}) {
+  const fields = Object.keys(data);
+  const variableDefinitions = [
+    "$id: UUID!",
+    ...fields.map((field) => `$${field}: ${variableTypes[field]}`),
+  ].join(", ");
+  const dataFields = fields
+    .map((field) => `${field}: $${field}`)
+    .join("\n      ");
+
+  return `
+    mutation ${operationName}(${variableDefinitions}) {
+      ${fieldName}(id: $id, data: {
+        ${dataFields}
+      })
+    }
+  `;
+}
+
+/*
+ * SQL Connect key-return mutations expose generated KeyOutput values directly,
+ * not selectable objects. Depending on SDK serialization, the key can arrive
+ * as a UUID string or as an object containing the primary key.
+ */
+function normalizeKeyOutput(value) {
+  if (typeof value === "string") {
+    return { id: value };
+  }
+
+  if (value && typeof value === "object") {
+    if (typeof value.id === "string") {
+      return { id: value.id };
+    }
+
+    const firstStringValue = Object.values(value).find((entry) => {
+      return typeof entry === "string";
+    });
+
+    if (firstStringValue) {
+      return { id: firstStringValue };
+    }
+
+    const nestedKey = Object.values(value)
+      .map((entry) => normalizeKeyOutput(entry))
+      .find((entry) => entry?.id);
+
+    if (nestedKey) {
+      return nestedKey;
+    }
+  }
+
+  return value;
+}
+
 /*
  * Creates a single image row.
  */
 async function createImageRecord(data) {
-  const result = await runAdminGraphql(CREATE_IMAGE_MUTATION, { data });
-  return result.image_insert;
+  const result = await runAdminGraphql(CREATE_IMAGE_MUTATION, data);
+  return normalizeKeyOutput(result.image_insert);
 }
 
 /*
  * Creates a single embedding row.
  */
 async function createEmbeddingRecord(data) {
-  const result = await runAdminGraphql(CREATE_EMBEDDING_MUTATION, { data });
-  return result.embedding_insert;
+  const result = await runAdminGraphql(CREATE_EMBEDDING_MUTATION, data);
+  return normalizeKeyOutput(result.embedding_insert);
 }
 
 /*
@@ -198,12 +275,19 @@ async function updateImageRecord(id, data) {
     return null;
   }
 
-  const result = await runAdminGraphql(UPDATE_IMAGE_MUTATION, {
-    id,
+  const mutation = buildUpdateMutation({
+    operationName: "UpdateImage",
+    fieldName: "image_update",
+    variableTypes: IMAGE_UPDATE_VARIABLE_TYPES,
     data: sanitized,
   });
 
-  return result.image_update;
+  const result = await runAdminGraphql(mutation, {
+    id,
+    ...sanitized,
+  });
+
+  return normalizeKeyOutput(result.image_update);
 }
 
 /*
@@ -235,12 +319,19 @@ async function upsertEmbeddingForImage(imageId, data) {
     return createEmbeddingRecord(payload);
   }
 
-  const result = await runAdminGraphql(UPDATE_EMBEDDING_MUTATION, {
-    id: existingEmbedding.id,
+  const mutation = buildUpdateMutation({
+    operationName: "UpdateEmbedding",
+    fieldName: "embedding_update",
+    variableTypes: EMBEDDING_UPDATE_VARIABLE_TYPES,
     data: payload,
   });
 
-  return result.embedding_update;
+  const result = await runAdminGraphql(mutation, {
+    id: existingEmbedding.id,
+    ...payload,
+  });
+
+  return normalizeKeyOutput(result.embedding_update);
 }
 
 /*
@@ -254,9 +345,10 @@ async function deleteImagesByIds(ids) {
 
   for (const id of ids) {
     const result = await runAdminGraphql(DELETE_IMAGE_MUTATION, { id });
+    const deleted = normalizeKeyOutput(result.image_delete);
 
-    if (result.image_delete?.id) {
-      deletedIds.push(result.image_delete.id);
+    if (deleted?.id) {
+      deletedIds.push(deleted.id);
     }
   }
 

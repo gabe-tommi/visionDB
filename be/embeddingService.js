@@ -59,27 +59,189 @@ function ensureModelUsed(modelUsed) {
 }
 
 /*
- * Placeholder hook for text embedding generation.
+ * Lazy-loaded text encoder for jina-clip-v2.
  *
- * Replace this with your actual model call once you decide where embeddings are
- * produced. For now, the route can still work if the client sends `vector`.
+ * We use AutoTokenizer + AutoModel directly instead of the higher-level
+ * pipeline helper because the pipeline's built-in mean pooling path has been
+ * throwing on this model during text search in this app.
  */
-async function generateTextEmbedding(_text) {
+let _textModelPromise = null;
+
+async function getPipeline() {
+  if (!_textModelPromise) {
+    const { AutoModel, AutoTokenizer, env } = await import("@huggingface/transformers");
+
+    if (process.env.HF_HOME) {
+      const relative = process.env.HF_HOME.replace(/^\/+/, "");
+      env.cacheDir = require("path").resolve(__dirname, relative);
+    }
+
+    const modelId = "jinaai/jina-clip-v2";
+    _textModelPromise = Promise.all([
+      AutoModel.from_pretrained(modelId, { dtype: "fp32" }),
+      AutoTokenizer.from_pretrained(modelId),
+    ]).then(([model, tokenizer]) => ({ model, tokenizer }));
+  }
+
+  return _textModelPromise;
+}
+
+/*
+ * Lazy-loaded AutoModel + AutoProcessor for jina-clip-v2 image encoding.
+ *
+ * The pipeline API does not support RawImage inputs for this model.
+ * Using AutoModel directly gives us the Jina image embedding outputs, already
+ * pooled to [batch, 1024].
+ */
+let _visionModelPromise = null;
+
+async function getVisionModel() {
+  if (!_visionModelPromise) {
+    const { AutoModel, AutoProcessor, env } = await import("@huggingface/transformers");
+
+    if (process.env.HF_HOME) {
+      const relative = process.env.HF_HOME.replace(/^\/+/, "");
+      env.cacheDir = require("path").resolve(__dirname, relative);
+    }
+
+    const modelId = "jinaai/jina-clip-v2";
+    _visionModelPromise = Promise.all([
+      AutoModel.from_pretrained(modelId, { dtype: "fp32" }),
+      AutoProcessor.from_pretrained(modelId),
+    ]).then(([model, processor]) => ({ model, processor }));
+  }
+
+  return _visionModelPromise;
+}
+
+/*
+ * Extracts a flat JS number array from a Transformers.js tensor and truncates
+ * it to EMBEDDING_DIMENSION using Matryoshka Representation Learning.
+ *
+ * jina-embeddings-v4 natively supports Matryoshka truncation: the first N
+ * dimensions of the full 2048-dim output form a valid, independently useful
+ * embedding. Slicing to 1024 retains strong retrieval quality while matching
+ * the existing schema column size.
+ */
+function tensorToArray(tensor) {
+  let full;
+
+  // Mean-pool over the token dimension when shape is [1, tokens, dim].
+  if (tensor.dims.length === 3) {
+    const [, seqLen, dim] = tensor.dims;
+    const data = tensor.data;
+    const result = new Array(dim).fill(0);
+    for (let t = 0; t < seqLen; t++) {
+      for (let d = 0; d < dim; d++) {
+        result[d] += data[t * dim + d];
+      }
+    }
+    for (let d = 0; d < dim; d++) {
+      result[d] /= seqLen;
+    }
+    full = result;
+  } else {
+    // Shape is already [1, dim] — squeeze batch dimension.
+    full = Array.from(tensor.data);
+  }
+
+  // Matryoshka truncation: keep only the first EMBEDDING_DIMENSION values.
+  return full.length > EMBEDDING_DIMENSION
+    ? full.slice(0, EMBEDDING_DIMENSION)
+    : full;
+}
+
+function normalizeL2(vector) {
+  const magnitude = Math.sqrt(
+    vector.reduce((sum, value) => sum + value * value, 0)
+  );
+
+  if (!magnitude) {
+    return vector;
+  }
+
+  return vector.map((value) => value / magnitude);
+}
+
+/*
+ * Generates a 1024-dimensional text embedding using jina-clip-v2.
+ *
+ * The model outputs 1024 dims natively, matching the schema column size.
+ */
+async function generateTextEmbedding(text) {
+  const { model, tokenizer } = await getPipeline();
+  const inputs = await tokenizer([text], { padding: true, truncation: true });
+  const output = await model(inputs);
+  const textEmbedding =
+    output.l2norm_text_embeddings ||
+    output.text_embeddings ||
+    output.text_embeds;
+
+  if (textEmbedding?.data) {
+    const full = Array.from(textEmbedding.data);
+    const vector =
+      full.length > EMBEDDING_DIMENSION ? full.slice(0, EMBEDDING_DIMENSION) : full;
+    return vector;
+  }
+
+  if (output.last_hidden_state?.data) {
+    return normalizeL2(tensorToArray(output.last_hidden_state));
+  }
+
   throw new Error(
-    "Automatic text embedding generation is not configured yet. Pass a 1024-length `vector`, or implement generateTextEmbedding in /Users/ezedi/Documents/GitHub/visionDB/be/embeddingService.js."
+    `text embedding missing from model output. Keys: ${Object.keys(output || {}).join(", ")}`
   );
 }
 
 /*
- * Placeholder hook for image embedding generation.
+ * Generates a 1024-dimensional image embedding using jina-clip-v2.
  *
- * Replace this with your real image embedding pipeline. The rest of the backend
- * is already shaped so you only need to change this function later.
+ * Uses AutoModel + AutoProcessor directly because the feature-extraction
+ * pipeline does not support RawImage inputs. The model returns normalized
+ * image embeddings pooled to shape [batch, 1024].
  */
-async function generateImageEmbedding(_input) {
-  throw new Error(
-    "Automatic image embedding generation is not configured yet. Pass a 1024-length `vector`, or implement generateImageEmbedding in /Users/ezedi/Documents/GitHub/visionDB/be/embeddingService.js."
-  );
+async function generateImageEmbedding({ imageUrl, description }) {
+  const { RawImage } = await import("@huggingface/transformers");
+
+  try {
+    console.log(`[embeddingService] Loading image from: ${imageUrl}`);
+    const image = await RawImage.read(imageUrl);
+    console.log(`[embeddingService] Image loaded (${image.width}x${image.height}), encoding...`);
+
+    const { model, processor } = await getVisionModel();
+    const inputs = await processor(null, [image], { padding: true, truncation: true });
+    const output = await model(inputs);
+    const imageEmbedding =
+      output.l2norm_image_embeddings ||
+      output.image_embeddings ||
+      output.image_embeds;
+
+    if (!imageEmbedding || !imageEmbedding.dims) {
+      throw new Error(
+        `image embedding missing from model output. Keys: ${Object.keys(output || {}).join(", ")}`
+      );
+    }
+
+    // Image embedding shape is [batch=1, dim] — squeeze batch dimension.
+    const full = Array.from(imageEmbedding.data);
+    const vector = full.length > EMBEDDING_DIMENSION ? full.slice(0, EMBEDDING_DIMENSION) : full;
+    console.log(`[embeddingService] Embedding OK — dim: ${vector.length}, first 5: [${vector.slice(0, 5).map(v => v.toFixed(6)).join(', ')}]`);
+    return vector;
+  } catch (visionError) {
+    console.error(`[embeddingService] Image embedding threw:`, visionError);
+    if (!description) {
+      throw new Error(
+        `Image embedding failed and no description was provided as fallback. Original error: ${visionError.message}`
+      );
+    }
+
+    console.warn(
+      "[embeddingService] Vision encoder failed, falling back to text embedding of description:",
+      visionError.message
+    );
+
+    return generateTextEmbedding(description);
+  }
 }
 
 /*
@@ -182,6 +344,7 @@ async function resolveImageSearchEmbedding(payload) {
 
 module.exports = {
   EMBEDDING_DIMENSION,
+  getPipeline,
   resolveImageSearchEmbedding,
   resolveStoredEmbedding,
   resolveTextSearchEmbedding,

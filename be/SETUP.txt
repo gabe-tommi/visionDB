@@ -1,0 +1,124 @@
+========================================
+ VisionDB Backend – Setup Instructions
+========================================
+
+Prerequisites
+-------------
+- Node.js 18 or later (required by @huggingface/transformers ONNX runtime)
+- npm 9 or later
+- Firebase project with Data Connect enabled
+
+
+1. Install Dependencies
+-----------------------
+  cd be
+  npm install
+
+This installs all dependencies including @huggingface/transformers which
+powers the local Jina v4 embedding model.
+
+
+2. Environment Variables
+------------------------
+Create a file at be/.env with the following variables:
+
+  PORT=3001                         # HTTP port the server listens on (optional, default 3001)
+  VISIONDB_EMBEDDING_MODEL=jinaai/jina-embeddings-v4   # recorded in DB alongside each vector
+  HF_HOME=/path/to/model/cache     # optional: redirect Hugging Face model download location
+                                   # default is ~/.cache/huggingface
+
+Firebase / Data Connect variables (required):
+  FIREBASE_PROJECT_ID=your-project-id
+  FIREBASE_SERVICE_ACCOUNT_KEY_PATH=./serviceAccountKey.json
+  # OR embed the key JSON directly:
+  FIREBASE_SERVICE_ACCOUNT_KEY={"type":"service_account",...}
+
+
+3. Vector Schema
+-----------------------------
+The embedding model (jina-embeddings-v4) outputs 2048 dimensions natively, but
+the backend truncates to 1024 using Matryoshka Representation Learning — the
+first 1024 dims form a valid, independently useful embedding at reduced size.
+
+Your Firebase Data Connect schema should keep the existing 1024-dimension column:
+
+  vector: Vector @col(size: 1024)   <-- no change needed
+
+No schema redeployment is required unless you changed it to 2048 previously.
+If you did, revert it back and run:
+  firebase deploy --only dataconnect
+
+WARNING: Changing vector dimensions is a breaking change. Re-embed all existing
+records after any schema size change.
+
+
+4. First-Run Model Download
+----------------------------
+jina-embeddings-v4 is downloaded from Hugging Face automatically on the
+first request that requires embedding generation (i.e., when no pre-computed
+`vector` is supplied in the request body).
+
+  Download size: approximately 2-3 GB
+  Cache location: HF_HOME (see step 2), default ~/.cache/huggingface
+
+The server will appear to hang on the first such request while downloading.
+To pre-warm the model at startup and avoid this, call the /warmup endpoint
+(if implemented) or trigger a test embedding request before going live.
+
+Subsequent server restarts will load from the local cache instantly.
+
+
+5. Start the Server
+--------------------
+  # Development (auto-restart on file changes):
+  npm run dev
+
+  # Production:
+  npm start
+
+
+6. How Embeddings Are Generated
+---------------------------------
+embeddingService.js resolves embeddings in this priority order:
+
+  1. Caller supplies `vector` (pre-computed float array of length 2048) → used directly
+  2. Caller supplies `imageUrl` → jina-embeddings-v4 encodes the image
+     (falls back to encoding `description` text if vision encoder is unavailable)
+  3. Caller supplies `description` text → jina-embeddings-v4 encodes the text
+
+For storing records, the backend uses task="retrieval.passage".
+For search queries, the same pipeline is used (task is consistent).
+
+
+7. Verifying the Setup
+-----------------------
+POST to the store-embedding route WITHOUT a `vector` field, providing only
+`description` or `imageUrl`. Confirm the response contains a 2048-length vector.
+
+Example (store with auto-embedding):
+  curl -X POST http://localhost:3001/images \
+    -H "Content-Type: application/json" \
+    -d '{"imageUrl":"https://example.com/photo.jpg","description":"a red apple"}'
+
+Example (search by text):
+  curl -X POST http://localhost:3001/images/search/text \
+    -H "Content-Type: application/json" \
+    -d '{"queryText":"red fruit","limit":5}'
+
+
+8. Troubleshooting
+-------------------
+"Embedding vector must contain 2048 values"
+  → A pre-computed vector was supplied with the wrong length.
+    Either supply a 2048-dim vector or omit `vector` to auto-generate.
+
+"Image embedding failed and no description was provided as fallback"
+  → The vision encoder is not available in the current ONNX export and no
+    description text was provided. Supply a `description` alongside imageUrl.
+
+Model download stalls or fails
+  → Check network connectivity to huggingface.co.
+    Set HF_HOME to a directory with sufficient disk space (3+ GB free).
+
+"Cannot find package '@huggingface/transformers'"
+  → Run `npm install` inside the be/ directory.

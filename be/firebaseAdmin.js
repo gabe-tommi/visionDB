@@ -1,6 +1,7 @@
 const { getApps, initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { getDataConnect } = require("firebase-admin/data-connect");
+const { getStorage } = require("firebase-admin/storage");
 
 /*
  * Small Firebase bootstrap module.
@@ -33,6 +34,10 @@ function getFirebaseApp() {
       options.projectId = process.env.FIREBASE_PROJECT_ID;
     }
 
+    if (process.env.FIREBASE_STORAGE_BUCKET) {
+      options.storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
+    }
+
     initializeApp(options);
   }
 
@@ -53,7 +58,7 @@ function getFirebaseAuth() {
  * Firebase. We keep the values in env so local/dev/prod can point at different
  * services without code changes.
  */
-function getSqlConnect() {
+function  getSqlConnect() {
   return getDataConnect(
     {
       location: requireEnv("FIREBASE_DATACONNECT_LOCATION"),
@@ -64,8 +69,17 @@ function getSqlConnect() {
   );
 }
 
+/*
+ * Returns the default Firebase Storage bucket.
+ * Requires FIREBASE_STORAGE_BUCKET in env (e.g. "your-project.appspot.com").
+ */
+function getStorageBucket() {
+  return getStorage(getFirebaseApp()).bucket();
+}
+
 module.exports = {
   getFirebaseApp,
   getFirebaseAuth,
   getSqlConnect,
+  getStorageBucket,
 };
