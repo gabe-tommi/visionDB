@@ -27,6 +27,35 @@
       <div id="results" class="results">
 
       </div>
+
+      <section class="panel embedding-map">
+        <div class="map-header">
+          <div>
+            <h2>Embedding map</h2>
+            <p class="map-note">Projects the query vector and nearest neighbors into 2D.</p>
+          </div>
+          <div class="map-controls">
+            <label>
+              Method
+              <select id="map-method">
+                <option value="pca" selected>PCA</option>
+                <option value="tsne">t-SNE</option>
+                <option value="umap">UMAP</option>
+              </select>
+            </label>
+            <label>
+              Neighbors
+              <input id="map-limit" type="number" min="10" max="200" value="60" />
+            </label>
+            <button id="map-button" type="button">Generate map</button>
+          </div>
+        </div>
+        <p id="map-status" class="map-status">Run a text search to visualize embeddings.</p>
+        <div class="map-canvas-wrap">
+          <canvas id="map-canvas" width="900" height="520"></canvas>
+          <div id="map-tooltip" class="map-tooltip" role="status" aria-live="polite"></div>
+        </div>
+      </section>
       
     </main>
 

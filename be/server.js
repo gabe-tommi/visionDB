@@ -22,6 +22,12 @@ const {
   updateImageRecord,
   upsertEmbeddingForImage,
 } = require("./visionDbRepository");
+const {
+  buildProjectionPoints,
+  normalizeMethod,
+  projectVectors,
+  SUPPORTED_METHODS,
+} = require("./vectorProjection");
 const { seedSampleImages } = require("./seedImages");
 
 const app = express();
@@ -479,6 +485,44 @@ async function handleSearchByText(req, res) {
   res.json({ matches, total: matches.length });
 }
 
+async function handleVisualizeByText(req, res) {
+  const payload = getPayload(req);
+
+  if (!payload.queryText) {
+    throw createHttpError(400, "`queryText` is required.");
+  }
+
+  const method = normalizeMethod(payload.method);
+  const embedding = await resolveTextSearchEmbedding(payload);
+  const matches = await searchImagesByVector({
+    vector: embedding.vector,
+    limit: normalizeLimit(payload.limit, 60),
+    within: normalizeWithin(payload.within),
+  });
+
+  const items = buildProjectionPoints({
+    queryVector: embedding.vector,
+    queryLabel: payload.queryText,
+    matches,
+  });
+
+  const vectors = items.map((item) => item.vector);
+  const coords = await projectVectors(vectors, method);
+
+  const points = items.map((item, index) => ({
+    ...item,
+    x: coords[index]?.[0] ?? 0,
+    y: coords[index]?.[1] ?? 0,
+  }));
+
+  res.json({
+    method,
+    methods: Array.from(SUPPORTED_METHODS),
+    total: points.length,
+    points,
+  });
+}
+
 async function handleSearchByImage(req, res) {
   if (isMultipartRequest(req)) {
     const files = await parseMultipartFiles(req);
@@ -675,6 +719,7 @@ app.post("/upload-images", asyncHandler(handleUploadImages));
 app.get("/get-all-images", asyncHandler(handleListImages));
 app.all("/get-image-by-image", asyncHandler(handleSearchByImage));
 app.all("/get-image-by-text", asyncHandler(handleSearchByText));
+app.post("/visualize-text", asyncHandler(handleVisualizeByText));
 app.patch("/update-image", asyncHandler(handleUpdateImage));
 app.delete("/delete-image", asyncHandler(handleDeleteImages));
 
@@ -683,6 +728,7 @@ app.post("/images/upload", asyncHandler(handleUploadImages));
 app.get("/images", asyncHandler(handleListImages));
 app.post("/images/search/image", asyncHandler(handleSearchByImage));
 app.post("/images/search/text", asyncHandler(handleSearchByText));
+app.post("/images/visualize/text", asyncHandler(handleVisualizeByText));
 app.patch("/images/:id", asyncHandler(handleUpdateImage));
 app.delete("/images/:id", asyncHandler(handleDeleteImages));
 app.delete("/images", asyncHandler(handleDeleteImages));
