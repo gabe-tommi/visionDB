@@ -46,6 +46,71 @@ function formatSimilarity(value) {
   return `${Math.round(value * 100)}% match`;
 }
 
+function formatEmbeddingVector(vector, previewLength = 12) {
+  if (!Array.isArray(vector) || !vector.length) {
+    return "No vector data available.";
+  }
+
+  const preview = vector
+    .slice(0, previewLength)
+    .map((value) => (typeof value === "number" ? value.toFixed(6) : String(value)))
+    .join(", ");
+  const remaining = vector.length - previewLength;
+
+  return `[${preview}${remaining > 0 ? `, ... (+${remaining} more)` : ""}]`;
+}
+
+function formatEmbeddingSummary(embedding, index) {
+  const parts = [`Embedding ${index + 1}`];
+
+  if (embedding?.modelUsed) {
+    parts.push(embedding.modelUsed);
+  }
+
+  if (typeof embedding?.dimension === "number") {
+    parts.push(`${embedding.dimension} dims`);
+  }
+
+  return parts.join(" • ");
+}
+
+function createEmbeddingsDropdown(embeddings = []) {
+  const dropdown = document.createElement("details");
+  dropdown.className = "embedding-dropdown";
+
+  const summary = document.createElement("summary");
+  summary.textContent = `Embeddings (${embeddings.length})`;
+  dropdown.appendChild(summary);
+
+  const list = document.createElement("div");
+  list.className = "embedding-list";
+
+  embeddings.forEach((embedding, index) => {
+    const item = document.createElement("section");
+    item.className = "embedding-item";
+
+    const heading = document.createElement("p");
+    heading.className = "embedding-title";
+    heading.textContent = formatEmbeddingSummary(embedding, index);
+
+    const meta = document.createElement("p");
+    meta.className = "embedding-meta";
+    meta.textContent = embedding?.generatedAt
+      ? `Generated ${new Date(embedding.generatedAt).toLocaleString()}`
+      : "Generated time unavailable";
+
+    const vector = document.createElement("pre");
+    vector.className = "embedding-vector";
+    vector.textContent = formatEmbeddingVector(embedding?.vector);
+
+    item.append(heading, meta, vector);
+    list.appendChild(item);
+  });
+
+  dropdown.appendChild(list);
+  return dropdown;
+}
+
 function renderResults(matches = []) {
   clearResults();
 
@@ -87,7 +152,16 @@ function renderResults(matches = []) {
     score.className = "result-score";
     score.textContent = formatSimilarity(match.similarity);
 
+    const embeddings = Array.isArray(image.embeddings_on_image)
+      ? image.embeddings_on_image
+      : [];
+
     details.append(title, score);
+
+    if (embeddings.length) {
+      details.appendChild(createEmbeddingsDropdown(embeddings));
+    }
+
     card.append(img, details);
     fragment.appendChild(card);
   });
