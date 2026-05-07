@@ -130,6 +130,13 @@ const SEARCH_IMAGES_BY_VECTOR_QUERY = `
         tags
         metadata
         createdAt
+        embeddings_on_image {
+          id
+          vector
+          dimension
+          modelUsed
+          generatedAt
+        }
       }
       _metadata {
         distance
