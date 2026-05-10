@@ -8,11 +8,13 @@ function clamp(value, min, max) {
 }
 
 function normalizeSimilarity(distance) {
-  if (typeof distance !== "number" || Number.isNaN(distance)) {
+  const numericDistance = Number(distance);
+
+  if (Number.isNaN(numericDistance)) {
     return null;
   }
 
-  const similarity = 1 - distance;
+  const similarity = 1 - numericDistance;
   return clamp(similarity, 0, 1);
 }
 

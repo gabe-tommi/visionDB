@@ -12,10 +12,27 @@ const mapButton = document.getElementById("map-button");
 const mapStatus = document.getElementById("map-status");
 const mapCanvas = document.getElementById("map-canvas");
 const mapTooltip = document.getElementById("map-tooltip");
+const clusterLegend = document.getElementById("cluster-legend");
 
 let lastQueryText = "";
 let mapPoints = [];
 let mapData = [];
+let returnedResultImageIds = new Set();
+
+const CLUSTER_COLORS = [
+  "#2563eb",
+  "#dc2626",
+  "#16a34a",
+  "#ca8a04",
+  "#7c3aed",
+  "#0891b2",
+  "#ea580c",
+  "#db2777",
+  "#4f46e5",
+  "#65a30d",
+];
+
+const MAX_CLUSTER_COUNT = CLUSTER_COLORS.length;
 
 function setStatus(message) {
   if (statusEl) {
@@ -62,6 +79,22 @@ function formatSimilarity(value) {
   return `${Math.round(value * 100)}% match`;
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeSimilarityValue(point) {
+  if (typeof point?.similarity === "number" && Number.isFinite(point.similarity)) {
+    return clamp(point.similarity, 0, 1);
+  }
+
+  if (typeof point?.distance === "number" && Number.isFinite(point.distance)) {
+    return clamp(1 - point.distance, 0, 1);
+  }
+
+  return null;
+}
+
 function formatEmbeddingVector(vector, previewLength = 12) {
   if (!Array.isArray(vector) || !vector.length) {
     return "No vector data available.";
@@ -101,13 +134,224 @@ function ensureCanvasSize() {
   mapCanvas.height = Math.max(1, Math.floor(rect.height * dpr));
 }
 
-function colorForSimilarity(similarity) {
-  if (typeof similarity !== "number") {
-    return "#5c7cfa";
+function squaredDistance(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+function chooseClusterCount(points) {
+  if (points.length <= 1) {
+    return points.length;
   }
 
-  const hue = 210 - 210 * similarity;
-  return `hsl(${hue.toFixed(0)}, 70%, 50%)`;
+  return clamp(Math.round(Math.sqrt(points.length / 12)), 2, MAX_CLUSTER_COUNT);
+}
+
+function nearestCentroidIndex(point, centroids) {
+  let bestIndex = 0;
+  let bestDistance = Infinity;
+
+  centroids.forEach((centroid, index) => {
+    const distance = squaredDistance(point, centroid);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+}
+
+function initializeCentroids(points, clusterCount) {
+  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  const centroids = [sorted[Math.floor(sorted.length / 2)]];
+
+  while (centroids.length < clusterCount) {
+    const next = sorted.reduce((best, point) => {
+      const distance = Math.min(
+        ...centroids.map((centroid) => squaredDistance(point, centroid))
+      );
+
+      return distance > best.distance ? { point, distance } : best;
+    }, { point: sorted[0], distance: -1 });
+
+    centroids.push(next.point);
+  }
+
+  return centroids.map((point) => ({ x: point.x, y: point.y }));
+}
+
+function clusterMapPoints(points) {
+  const matchPoints = points.filter((point) => point.kind !== "query");
+  const clusterCount = chooseClusterCount(matchPoints);
+
+  if (!clusterCount) {
+    return {
+      points,
+      clusters: [],
+    };
+  }
+
+  let centroids = initializeCentroids(matchPoints, clusterCount);
+  let assignments = new Map();
+
+  for (let iteration = 0; iteration < 18; iteration += 1) {
+    assignments = new Map();
+    const totals = centroids.map(() => ({ x: 0, y: 0, count: 0 }));
+
+    matchPoints.forEach((point) => {
+      const clusterIndex = nearestCentroidIndex(point, centroids);
+      assignments.set(point.plotIndex, clusterIndex);
+      totals[clusterIndex].x += point.x;
+      totals[clusterIndex].y += point.y;
+      totals[clusterIndex].count += 1;
+    });
+
+    centroids = centroids.map((centroid, index) => {
+      const total = totals[index];
+      if (!total.count) {
+        return centroid;
+      }
+
+      return {
+        x: total.x / total.count,
+        y: total.y / total.count,
+      };
+    });
+  }
+
+  const clusters = centroids.map((_, index) => ({
+    id: index + 1,
+    color: CLUSTER_COLORS[index % CLUSTER_COLORS.length],
+    size: 0,
+  }));
+
+  const clusteredPoints = points.map((point) => {
+    if (point.kind === "query") {
+      return {
+        ...point,
+        clusterId: null,
+        clusterColor: "#111c33",
+      };
+    }
+
+    const clusterIndex = assignments.get(point.plotIndex) ?? 0;
+    clusters[clusterIndex].size += 1;
+
+    return {
+      ...point,
+      clusterId: clusterIndex + 1,
+      clusterColor: clusters[clusterIndex].color,
+    };
+  });
+
+  return {
+    points: clusteredPoints,
+    clusters: clusters.filter((cluster) => cluster.size > 0),
+  };
+}
+
+function updateClusterLegend(clusters) {
+  if (!clusterLegend) {
+    return;
+  }
+
+  clusterLegend.replaceChildren();
+
+  if (!clusters.length) {
+    const placeholder = document.createElement("span");
+    placeholder.className = "cluster-placeholder";
+    placeholder.textContent = "Clusters appear after map generation.";
+    clusterLegend.appendChild(placeholder);
+    return;
+  }
+
+  clusters.forEach((cluster) => {
+    const item = document.createElement("span");
+    item.className = "cluster-legend-item";
+
+    const swatch = document.createElement("span");
+    swatch.className = "cluster-swatch";
+    swatch.style.backgroundColor = cluster.color;
+
+    const label = document.createElement("span");
+    label.textContent = `Cluster ${cluster.id} (${cluster.size})`;
+
+    item.append(swatch, label);
+    clusterLegend.appendChild(item);
+  });
+
+  if (returnedResultImageIds.size) {
+    const resultItem = document.createElement("span");
+    resultItem.className = "cluster-legend-item";
+
+    const resultSwatch = document.createElement("span");
+    resultSwatch.className = "returned-result-swatch";
+
+    const resultLabel = document.createElement("span");
+    resultLabel.textContent = "Returned result";
+
+    resultItem.append(resultSwatch, resultLabel);
+    clusterLegend.appendChild(resultItem);
+  }
+}
+
+function drawClusterPoint(ctx, point, dpr) {
+  const radius = 5;
+
+  ctx.fillStyle = point.clusterColor;
+  ctx.beginPath();
+  ctx.arc(point.screenX * dpr, point.screenY * dpr, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(13, 26, 53, 0.28)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(point.screenX * dpr, point.screenY * dpr, radius + 0.5, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function drawReturnedResultPoint(ctx, point, dpr) {
+  const x = point.screenX * dpr;
+  const y = point.screenY * dpr;
+
+  ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+  ctx.beginPath();
+  ctx.arc(x, y, 13, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "#111c33";
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.arc(x, y, 11, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = point.clusterColor;
+  ctx.beginPath();
+  ctx.arc(x, y, 7, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(x, y, 4, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function drawQueryPoint(ctx, point, dpr) {
+  const radius = 8;
+
+  ctx.fillStyle = "#111c33";
+  ctx.beginPath();
+  ctx.arc(point.screenX * dpr, point.screenY * dpr, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(point.screenX * dpr, point.screenY * dpr, radius + 2, 0, Math.PI * 2);
+  ctx.stroke();
 }
 
 function renderMap(points) {
@@ -129,6 +373,7 @@ function renderMap(points) {
   if (!points.length) {
     mapPoints = [];
     mapData = [];
+    updateClusterLegend([]);
     return;
   }
 
@@ -195,30 +440,34 @@ function renderMap(points) {
   }
 
   const dpr = window.devicePixelRatio || 1;
-  const plotted = points.map((point) => ({
-    ...point,
-    screenX: scaleX(point.x) / dpr,
-    screenY: scaleY(point.y) / dpr,
-  }));
+  const plotted = points.map((point, index) => {
+    const similarity = normalizeSimilarityValue(point);
 
-  plotted.forEach((point) => {
-    const radius = point.kind === "query" ? 8 : 5;
-    ctx.fillStyle =
-      point.kind === "query" ? "#111c33" : colorForSimilarity(point.similarity);
-    ctx.beginPath();
-    ctx.arc(point.screenX * dpr, point.screenY * dpr, radius, 0, Math.PI * 2);
-    ctx.fill();
-
-    if (point.kind === "query") {
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(point.screenX * dpr, point.screenY * dpr, radius + 2, 0, Math.PI * 2);
-      ctx.stroke();
-    }
+    return {
+      ...point,
+      plotIndex: index,
+      isReturnedResult: point.kind !== "query" && returnedResultImageIds.has(point.id),
+      similarity,
+      screenX: scaleX(point.x) / dpr,
+      screenY: scaleY(point.y) / dpr,
+    };
   });
+  const clustered = clusterMapPoints(plotted);
+  updateClusterLegend(clustered.clusters);
 
-  mapPoints = plotted;
+  clustered.points
+    .filter((point) => point.kind !== "query" && !point.isReturnedResult)
+    .forEach((point) => drawClusterPoint(ctx, point, dpr));
+
+  clustered.points
+    .filter((point) => point.isReturnedResult)
+    .forEach((point) => drawReturnedResultPoint(ctx, point, dpr));
+
+  clustered.points
+    .filter((point) => point.kind === "query")
+    .forEach((point) => drawQueryPoint(ctx, point, dpr));
+
+  mapPoints = clustered.points;
 }
 
 function showTooltip(point, event) {
@@ -226,13 +475,19 @@ function showTooltip(point, event) {
     return;
   }
 
-  const label = point.kind === "query" ? "Query" : point.label || "Result";
+  const label =
+    point.kind === "query"
+      ? "Query"
+      : point.isReturnedResult
+        ? `Returned result: ${point.label || "Result"}`
+        : point.label || "Cluster point";
   const similarity =
     typeof point.similarity === "number"
       ? `${Math.round(point.similarity * 100)}% match`
       : "Similarity unavailable";
+  const cluster = point.clusterId ? `Cluster ${point.clusterId}` : "Query point";
 
-  mapTooltip.textContent = `${label} • ${similarity}`;
+  mapTooltip.textContent = `${label} - ${cluster} - ${similarity}`;
   mapTooltip.style.left = `${event.offsetX}px`;
   mapTooltip.style.top = `${event.offsetY}px`;
   mapTooltip.style.opacity = "1";
@@ -252,7 +507,8 @@ function handleMapHover(event) {
   const hit = mapPoints.find((point) => {
     const dx = event.offsetX - point.screenX;
     const dy = event.offsetY - point.screenY;
-    return Math.sqrt(dx * dx + dy * dy) < 10;
+    const hitRadius = point.isReturnedResult ? 16 : 10;
+    return Math.sqrt(dx * dx + dy * dy) < hitRadius;
   });
 
   if (hit) {
@@ -301,6 +557,7 @@ function createEmbeddingsDropdown(embeddings = []) {
 
 function renderResults(matches = []) {
   clearResults();
+  returnedResultImageIds = new Set();
 
   if (!resultsEl) {
     return;
@@ -320,6 +577,10 @@ function renderResults(matches = []) {
     const image = getMatchImage(match);
     if (!image?.imageUrl) {
       return;
+    }
+
+    if (image.id) {
+      returnedResultImageIds.add(image.id);
     }
 
     const card = document.createElement("article");
