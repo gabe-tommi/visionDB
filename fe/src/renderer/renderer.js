@@ -5,6 +5,8 @@ const API_BASE_URL = "http://localhost:3001";
 const queryInput = document.getElementById("query-input");
 const queryButton = document.getElementById("query-button");
 const uploadButton = document.getElementById("upload-button");
+const thresholdSlider = document.getElementById("threshold-slider");
+const thresholdValue = document.getElementById("threshold-value");
 const resultsEl = document.getElementById("results");
 const mapMethod = document.getElementById("map-method");
 const mapLimit = document.getElementById("map-limit");
@@ -65,6 +67,33 @@ function setMapStatus(message) {
   if (mapStatus) {
     mapStatus.textContent = message;
   }
+}
+
+function formatThreshold(value) {
+  return Number(value).toFixed(2);
+}
+
+function getSimilarityThreshold() {
+  const parsed = Number(thresholdSlider?.value);
+  return Number.isFinite(parsed) ? parsed : 0.35;
+}
+
+function updateThresholdValue() {
+  const threshold = getSimilarityThreshold();
+
+  if (thresholdValue) {
+    thresholdValue.textContent = formatThreshold(threshold);
+  }
+}
+
+function formatSearchSummary(result, noun = "images") {
+  const total = result.total || result.matches?.length || 0;
+  const threshold = formatThreshold(result.within ?? getSimilarityThreshold());
+  const fallback = result.thresholdFallback
+    ? " No close matches were found, so the backend retried without the threshold."
+    : "";
+
+  return `${total} ${noun} ranked by similarity. Distance threshold: ${threshold}.${fallback}`;
 }
 
 function getMatchImage(match) {
@@ -651,14 +680,21 @@ queryButton.addEventListener("click", () => {
     setStatus("Searching by image...");
     
     try {
-      const response = await fetch(`${API_BASE_URL}/get-image-by-image`, {
-        method: "POST",
-        body: formData
+      const threshold = getSimilarityThreshold();
+      const searchParams = new URLSearchParams({
+        within: String(threshold),
       });
+      const response = await fetch(
+        `${API_BASE_URL}/get-image-by-image?${searchParams.toString()}`,
+        {
+          method: "POST",
+          body: formData
+        }
+      );
       const result = await parseJsonResponse(response);
       console.log("Result:", result);
       renderResults(result.matches);
-      setStatus(`${result.total || result.matches?.length || 0} images ranked by similarity.`);
+      setStatus(formatSearchSummary(result));
     } catch (error) {
       console.error("Error:", error);
       setStatus(error.message || "Error processing image");
@@ -719,17 +755,18 @@ queryInput.addEventListener("keypress", async (event) => {
     setStatus("Searching by text...");
 
     try {
+      const threshold = getSimilarityThreshold();
       const response = await fetch(`${API_BASE_URL}/get-image-by-text`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ queryText: query })
+        body: JSON.stringify({ queryText: query, within: threshold })
       });
       const result = await parseJsonResponse(response);
       console.log("Result:", result);
       renderResults(result.matches);
-      setStatus(`${result.total || result.matches?.length || 0} images ranked by similarity.`);
+      setStatus(formatSearchSummary(result));
       lastQueryText = query;
       await runVisualization(query);
     } catch (error) {
@@ -749,6 +786,7 @@ async function runVisualization(queryText) {
   const limitValue = Number.parseInt(mapLimit?.value || "60", 10);
   const limit = Number.isNaN(limitValue) ? 60 : limitValue;
   const method = mapMethod?.value || "pca";
+  const threshold = getSimilarityThreshold();
 
   setMapStatus(`Projecting vectors with ${method.toUpperCase()}...`);
 
@@ -762,13 +800,17 @@ async function runVisualization(queryText) {
         queryText,
         limit,
         method,
+        within: threshold,
       }),
     });
 
     const result = await parseJsonResponse(response);
     renderMap(result.points || []);
+    const fallback = result.thresholdFallback
+      ? " Backend retried without the threshold because no close matches were found."
+      : "";
     setMapStatus(
-      `${result.total || result.points?.length || 0} vectors projected via ${result.method?.toUpperCase() || method.toUpperCase()}.`
+      `${result.total || result.points?.length || 0} vectors projected via ${result.method?.toUpperCase() || method.toUpperCase()} with distance threshold ${formatThreshold(result.within ?? threshold)}.${fallback}`
     );
   } catch (error) {
     console.error("Visualization error:", error);
@@ -794,6 +836,11 @@ if (mapMethod) {
       await runVisualization(lastQueryText || queryInput.value);
     }
   });
+}
+
+if (thresholdSlider) {
+  updateThresholdValue();
+  thresholdSlider.addEventListener("input", updateThresholdValue);
 }
 
 if (appInfo && statusEl) {

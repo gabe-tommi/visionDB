@@ -47,16 +47,48 @@ function normalizeMethod(method) {
   return SUPPORTED_METHODS.has(normalized) ? normalized : DEFAULT_METHOD;
 }
 
+function projectSmallSet(vectors) {
+  if (!vectors.length) {
+    return [];
+  }
+
+  if (vectors.length === 1) {
+    return [[0, 0]];
+  }
+
+  return vectors.map((_vector, index) => {
+    const x = index === 0 ? -1 : 1;
+    return [x, 0];
+  });
+}
+
 async function projectWithPca(vectors) {
+  if (vectors.length < 3) {
+    return projectSmallSet(vectors);
+  }
+
   const { PCA } = require("ml-pca");
+  const nComponents = Math.min(2, vectors.length - 1, vectors[0]?.length || 0);
+
+  if (nComponents < 1) {
+    return projectSmallSet(vectors);
+  }
+
   const pca = new PCA(vectors, { center: true, scale: false });
-  return pca.predict(vectors, { nComponents: 2 }).to2DArray();
+  return pca.predict(vectors, { nComponents }).to2DArray().map((coords) => [
+    coords[0] || 0,
+    coords[1] || 0,
+  ]);
 }
 
 async function projectWithTsne(vectors, options = {}) {
+  if (vectors.length < 3) {
+    return projectSmallSet(vectors);
+  }
+
   const TSNE = require("tsne-js");
   const total = vectors.length;
-  const perplexity = clamp(Math.floor((total - 1) / 3), 5, 30);
+  const perplexity = clamp(Math.floor((total - 1) / 3), 1, Math.max(1, total - 1));
   const iterations = options.iterations || 500;
   const tsne = new TSNE({
     dim: 2,
@@ -73,11 +105,17 @@ async function projectWithTsne(vectors, options = {}) {
 }
 
 async function projectWithUmap(vectors, options = {}) {
+  if (vectors.length < 3) {
+    return projectSmallSet(vectors);
+  }
+
   const module = await import("umap-js");
   const UMAP = module.UMAP || module.default || module;
   const umap = new UMAP({
     nComponents: 2,
-    nNeighbors: options.nNeighbors || clamp(Math.floor(vectors.length / 2), 5, 25),
+    nNeighbors:
+      options.nNeighbors ||
+      clamp(Math.floor(vectors.length / 2), 2, Math.max(2, vectors.length - 1)),
     minDist: options.minDist || 0.15,
   });
 
