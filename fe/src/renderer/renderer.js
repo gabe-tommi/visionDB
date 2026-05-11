@@ -15,6 +15,8 @@ const mapStatus = document.getElementById("map-status");
 const mapCanvas = document.getElementById("map-canvas");
 const mapTooltip = document.getElementById("map-tooltip");
 const clusterLegend = document.getElementById("cluster-legend");
+const viewTabs = Array.from(document.querySelectorAll("[data-tab-target]"));
+const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
 
 let lastQueryText = "";
 let mapPoints = [];
@@ -154,13 +156,18 @@ function formatEmbeddingSummary(embedding, index) {
 
 function ensureCanvasSize() {
   if (!mapCanvas) {
-    return;
+    return false;
   }
 
   const rect = mapCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    return false;
+  }
+
   const dpr = window.devicePixelRatio || 1;
   mapCanvas.width = Math.max(1, Math.floor(rect.width * dpr));
   mapCanvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  return true;
 }
 
 function squaredDistance(a, b) {
@@ -383,12 +390,17 @@ function drawQueryPoint(ctx, point, dpr) {
   ctx.stroke();
 }
 
-function renderMap(points) {
+function renderMap(points = mapData) {
   if (!mapCanvas) {
     return;
   }
 
-  ensureCanvasSize();
+  const currentPoints = Array.isArray(points) ? points : [];
+  mapData = currentPoints;
+
+  if (!ensureCanvasSize()) {
+    return;
+  }
 
   const ctx = mapCanvas.getContext("2d");
   if (!ctx) {
@@ -399,17 +411,14 @@ function renderMap(points) {
   const height = mapCanvas.height;
   ctx.clearRect(0, 0, width, height);
 
-  if (!points.length) {
+  if (!currentPoints.length) {
     mapPoints = [];
-    mapData = [];
     updateClusterLegend([]);
     return;
   }
 
-  mapData = points;
-
-  const xs = points.map((point) => point.x);
-  const ys = points.map((point) => point.y);
+  const xs = currentPoints.map((point) => point.x);
+  const ys = currentPoints.map((point) => point.y);
   const minX = Math.min(...xs);
   const maxX = Math.max(...xs);
   const minY = Math.min(...ys);
@@ -469,7 +478,7 @@ function renderMap(points) {
   }
 
   const dpr = window.devicePixelRatio || 1;
-  const plotted = points.map((point, index) => {
+  const plotted = currentPoints.map((point, index) => {
     const similarity = normalizeSimilarityValue(point);
 
     return {
@@ -544,6 +553,24 @@ function handleMapHover(event) {
     showTooltip(hit, event);
   } else {
     hideTooltip();
+  }
+}
+
+function activateTab(targetId) {
+  viewTabs.forEach((tab) => {
+    const isActive = tab.dataset.tabTarget === targetId;
+    tab.classList.toggle("is-active", isActive);
+    tab.setAttribute("aria-selected", String(isActive));
+  });
+
+  tabPanels.forEach((panel) => {
+    const isActive = panel.id === targetId;
+    panel.classList.toggle("is-active", isActive);
+    panel.hidden = !isActive;
+  });
+
+  if (targetId === "embedding-map-panel") {
+    renderMap(mapData);
   }
 }
 
@@ -823,6 +850,12 @@ if (mapCanvas) {
   mapCanvas.addEventListener("mouseleave", hideTooltip);
   window.addEventListener("resize", () => renderMap(mapData));
 }
+
+viewTabs.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    activateTab(tab.dataset.tabTarget);
+  });
+});
 
 if (mapButton) {
   mapButton.addEventListener("click", async () => {

@@ -42,11 +42,34 @@
         
       </header>
 
-      <div id="results" class="results">
+      <nav class="view-tabs" aria-label="VisionDB views">
+        <button
+          class="view-tab is-active"
+          type="button"
+          data-tab-target="results-panel"
+          aria-controls="results-panel"
+          aria-selected="true"
+        >
+          Results
+        </button>
+        <button
+          class="view-tab"
+          type="button"
+          data-tab-target="embedding-map-panel"
+          aria-controls="embedding-map-panel"
+          aria-selected="false"
+        >
+          Embedding map
+        </button>
+      </nav>
 
-      </div>
+      <section id="results-panel" class="tab-panel is-active">
+        <div id="results" class="results">
 
-      <section class="panel embedding-map">
+        </div>
+      </section>
+
+      <section id="embedding-map-panel" class="panel embedding-map tab-panel" hidden>
         <div class="map-header">
           <div>
             <h2>Embedding map</h2>
