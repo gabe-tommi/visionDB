@@ -117,6 +117,7 @@ const SEARCH_IMAGES_BY_VECTOR_QUERY = `
     embeddings_vector_similarity(
       compare: $compare
       limit: $limit
+      method: COSINE
       within: $within
     ) {
       id
@@ -216,6 +217,29 @@ function normalizeKeyOutput(value) {
   return value;
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeDistance(value) {
+  const distance = Number(value);
+  return Number.isFinite(distance) ? distance : null;
+}
+
+function addSimilarityScore(match) {
+  const distance = normalizeDistance(match?._metadata?.distance);
+
+  if (distance === null) {
+    return match;
+  }
+
+  return {
+    ...match,
+    distance,
+    similarity: clamp(1 - distance, 0, 1),
+  };
+}
+
 /*
  * Creates a single image row.
  */
@@ -261,15 +285,15 @@ async function listImages(limit = 50) {
 async function searchImagesByVector({ vector, limit = 5, within }) {
   const result = await runAdminGraphql(
     SEARCH_IMAGES_BY_VECTOR_QUERY,
-    {
+    stripUndefined({
       compare: vector,
       limit,
       within,
-    },
+    }),
     { readOnly: true }
   );
 
-  return result.embeddings_vector_similarity || [];
+  return (result.embeddings_vector_similarity || []).map(addSimilarityScore);
 }
 
 /*

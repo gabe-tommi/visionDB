@@ -22,10 +22,17 @@ const {
   updateImageRecord,
   upsertEmbeddingForImage,
 } = require("./visionDbRepository");
+const {
+  buildProjectionPoints,
+  normalizeMethod,
+  projectVectors,
+  SUPPORTED_METHODS,
+} = require("./vectorProjection");
 const { seedSampleImages } = require("./seedImages");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const DEFAULT_VECTOR_DISTANCE_THRESHOLD = 0.35;
 
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -179,18 +186,54 @@ function normalizeLimit(value, fallback) {
   return parsed;
 }
 
-function normalizeWithin(value) {
+function normalizeWithin(value, fallback = DEFAULT_VECTOR_DISTANCE_THRESHOLD) {
   if (value === undefined || value === null || value === "") {
-    return undefined;
+    return fallback;
   }
 
   const parsed = Number(value);
 
-  if (Number.isNaN(parsed)) {
-    throw createHttpError(400, "`within` must be a number.");
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw createHttpError(400, "`within` must be a non-negative number.");
   }
 
   return parsed;
+}
+
+async function searchImagesByVectorWithFallback({ vector, limit, within }) {
+  const matches = await searchImagesByVector({ vector, limit, within });
+
+  if (matches.length || within === undefined) {
+    console.log(
+      `[search] threshold ${within === undefined ? "disabled" : `within=${within}`} returned ${matches.length} match(es).`
+    );
+
+    return {
+      matches,
+      thresholdApplied: within !== undefined,
+      thresholdFallback: false,
+    };
+  }
+
+  console.log(
+    `[search] threshold within=${within} returned 0 matches; retrying without threshold.`
+  );
+
+  const fallbackMatches = await searchImagesByVector({
+    vector,
+    limit,
+    within: undefined,
+  });
+
+  console.log(
+    `[search] fallback without threshold returned ${fallbackMatches.length} match(es).`
+  );
+
+  return {
+    matches: fallbackMatches,
+    thresholdApplied: false,
+    thresholdFallback: true,
+  };
 }
 
 function normalizeIds(value, fallbackId) {
@@ -470,13 +513,62 @@ async function handleListImages(req, res) {
 async function handleSearchByText(req, res) {
   const payload = getPayload(req);
   const embedding = await resolveTextSearchEmbedding(payload);
-  const matches = await searchImagesByVector({
+  const within = normalizeWithin(payload.within);
+  const searchResult = await searchImagesByVectorWithFallback({
     vector: embedding.vector,
     limit: normalizeLimit(payload.limit, 50),
-    within: normalizeWithin(payload.within),
+    within,
   });
 
-  res.json({ matches, total: matches.length });
+  res.json({
+    matches: searchResult.matches,
+    total: searchResult.matches.length,
+    within,
+    thresholdApplied: searchResult.thresholdApplied,
+    thresholdFallback: searchResult.thresholdFallback,
+  });
+}
+
+async function handleVisualizeByText(req, res) {
+  const payload = getPayload(req);
+
+  if (!payload.queryText) {
+    throw createHttpError(400, "`queryText` is required.");
+  }
+
+  const method = normalizeMethod(payload.method);
+  const embedding = await resolveTextSearchEmbedding(payload);
+  const within = normalizeWithin(payload.within);
+  const searchResult = await searchImagesByVectorWithFallback({
+    vector: embedding.vector,
+    limit: normalizeLimit(payload.limit, 60),
+    within,
+  });
+
+  const items = buildProjectionPoints({
+    queryVector: embedding.vector,
+    queryLabel: payload.queryText,
+    matches: searchResult.matches,
+  });
+
+  const vectors = items.map((item) => item.vector);
+  const coords = await projectVectors(vectors, method);
+
+  const points = items.map((item, index) => ({
+    ...item,
+    x: coords[index]?.[0] ?? 0,
+    y: coords[index]?.[1] ?? 0,
+  }));
+
+  res.json({
+    method,
+    methods: Array.from(SUPPORTED_METHODS),
+    total: points.length,
+    within,
+    thresholdApplied: searchResult.thresholdApplied,
+    thresholdFallback: searchResult.thresholdFallback,
+    points,
+  });
 }
 
 async function handleSearchByImage(req, res) {
@@ -500,13 +592,20 @@ async function handleSearchByImage(req, res) {
         imageUrl: tempPath,
         description: descriptionFromFilename(file.originalName),
       });
-      const matches = await searchImagesByVector({
+      const within = normalizeWithin(req.query.within);
+      const searchResult = await searchImagesByVectorWithFallback({
         vector: embedding.vector,
         limit: normalizeLimit(req.query.limit, 50),
-        within: normalizeWithin(req.query.within),
+        within,
       });
 
-      res.json({ matches, total: matches.length });
+      res.json({
+        matches: searchResult.matches,
+        total: searchResult.matches.length,
+        within,
+        thresholdApplied: searchResult.thresholdApplied,
+        thresholdFallback: searchResult.thresholdFallback,
+      });
       return;
     } finally {
       await fs.promises.rm(tempDir, { recursive: true, force: true });
@@ -515,13 +614,20 @@ async function handleSearchByImage(req, res) {
 
   const payload = getPayload(req);
   const embedding = await resolveImageSearchEmbedding(payload);
-  const matches = await searchImagesByVector({
+  const within = normalizeWithin(payload.within);
+  const searchResult = await searchImagesByVectorWithFallback({
     vector: embedding.vector,
     limit: normalizeLimit(payload.limit, 50),
-    within: normalizeWithin(payload.within),
+    within,
   });
 
-  res.json({ matches, total: matches.length });
+  res.json({
+    matches: searchResult.matches,
+    total: searchResult.matches.length,
+    within,
+    thresholdApplied: searchResult.thresholdApplied,
+    thresholdFallback: searchResult.thresholdFallback,
+  });
 }
 
 async function handleUpdateImage(req, res) {
@@ -675,6 +781,7 @@ app.post("/upload-images", asyncHandler(handleUploadImages));
 app.get("/get-all-images", asyncHandler(handleListImages));
 app.all("/get-image-by-image", asyncHandler(handleSearchByImage));
 app.all("/get-image-by-text", asyncHandler(handleSearchByText));
+app.post("/visualize-text", asyncHandler(handleVisualizeByText));
 app.patch("/update-image", asyncHandler(handleUpdateImage));
 app.delete("/delete-image", asyncHandler(handleDeleteImages));
 
@@ -683,6 +790,7 @@ app.post("/images/upload", asyncHandler(handleUploadImages));
 app.get("/images", asyncHandler(handleListImages));
 app.post("/images/search/image", asyncHandler(handleSearchByImage));
 app.post("/images/search/text", asyncHandler(handleSearchByText));
+app.post("/images/visualize/text", asyncHandler(handleVisualizeByText));
 app.patch("/images/:id", asyncHandler(handleUpdateImage));
 app.delete("/images/:id", asyncHandler(handleDeleteImages));
 app.delete("/images", asyncHandler(handleDeleteImages));
