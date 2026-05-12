@@ -1,4 +1,5 @@
 const EMBEDDING_DIMENSION = 1024;
+const MODEL_ID = "jinaai/jina-clip-v2";
 
 /*
  * Embedding boundary for the backend.
@@ -76,10 +77,9 @@ async function getPipeline() {
       env.cacheDir = require("path").resolve(__dirname, relative);
     }
 
-    const modelId = "jinaai/jina-clip-v2";
     _textModelPromise = Promise.all([
-      AutoModel.from_pretrained(modelId, { dtype: "fp32" }),
-      AutoTokenizer.from_pretrained(modelId),
+      AutoModel.from_pretrained(MODEL_ID, { dtype: "fp32" }),
+      AutoTokenizer.from_pretrained(MODEL_ID),
     ]).then(([model, tokenizer]) => ({ model, tokenizer }));
   }
 
@@ -104,10 +104,9 @@ async function getVisionModel() {
       env.cacheDir = require("path").resolve(__dirname, relative);
     }
 
-    const modelId = "jinaai/jina-clip-v2";
     _visionModelPromise = Promise.all([
-      AutoModel.from_pretrained(modelId, { dtype: "fp32" }),
-      AutoProcessor.from_pretrained(modelId),
+      AutoModel.from_pretrained(MODEL_ID, { dtype: "fp32" }),
+      AutoProcessor.from_pretrained(MODEL_ID),
     ]).then(([model, processor]) => ({ model, processor }));
   }
 
@@ -163,15 +162,51 @@ function normalizeL2(vector) {
   return vector.map((value) => value / magnitude);
 }
 
-/*
- * Generates a 1024-dimensional text embedding using jina-clip-v2.
- *
- * The model outputs 1024 dims natively, matching the schema column size.
- */
-async function generateTextEmbedding(text) {
-  const { model, tokenizer } = await getPipeline();
-  const inputs = await tokenizer([text], { padding: true, truncation: true });
-  const output = await model(inputs);
+function calculateMagnitude(vector) {
+  return Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
+}
+
+function summarizeVector(vector, previewSize = 48, topCount = 8) {
+  const preview = vector.slice(0, previewSize);
+  const magnitude = calculateMagnitude(vector);
+  const min = Math.min(...vector);
+  const max = Math.max(...vector);
+  const mean = vector.reduce((sum, value) => sum + value, 0) / vector.length;
+  const positiveCount = vector.filter((value) => value > 0).length;
+  const negativeCount = vector.filter((value) => value < 0).length;
+
+  const topDimensions = vector
+    .map((value, index) => ({
+      index,
+      value,
+      absoluteValue: Math.abs(value),
+    }))
+    .sort((a, b) => b.absoluteValue - a.absoluteValue)
+    .slice(0, topCount)
+    .map(({ index, value }) => ({ index, value }));
+
+  return {
+    preview,
+    magnitude,
+    min,
+    max,
+    mean,
+    positiveCount,
+    negativeCount,
+    topDimensions,
+  };
+}
+
+function tensorRowToArray(tensor) {
+  if (!tensor?.tolist) {
+    return null;
+  }
+
+  const value = tensor.tolist();
+  return Array.isArray(value?.[0]) ? value[0].map((item) => Number(item)) : value;
+}
+
+function extractTextEmbeddingOutput(output) {
   const textEmbedding =
     output.l2norm_text_embeddings ||
     output.text_embeddings ||
@@ -179,18 +214,127 @@ async function generateTextEmbedding(text) {
 
   if (textEmbedding?.data) {
     const full = Array.from(textEmbedding.data);
-    const vector =
-      full.length > EMBEDDING_DIMENSION ? full.slice(0, EMBEDDING_DIMENSION) : full;
-    return vector;
+    return {
+      vector:
+        full.length > EMBEDDING_DIMENSION
+          ? full.slice(0, EMBEDDING_DIMENSION)
+          : full,
+      tensor: textEmbedding,
+      source: output.l2norm_text_embeddings
+        ? "l2norm_text_embeddings"
+        : output.text_embeddings
+          ? "text_embeddings"
+          : "text_embeds",
+    };
   }
 
   if (output.last_hidden_state?.data) {
-    return normalizeL2(tensorToArray(output.last_hidden_state));
+    return {
+      vector: normalizeL2(tensorToArray(output.last_hidden_state)),
+      tensor: output.last_hidden_state,
+      source: "last_hidden_state_mean_pool",
+    };
   }
 
   throw new Error(
     `text embedding missing from model output. Keys: ${Object.keys(output || {}).join(", ")}`
   );
+}
+
+function buildTokenDiagnostics({
+  tokenizer,
+  inputIds,
+  tokenStrings,
+  attentionMask,
+}) {
+  const specialIds = new Set((tokenizer.all_special_ids || []).map((id) => Number(id)));
+
+  return inputIds.map((id, index) => ({
+    index,
+    id: Number(id),
+    text:
+      tokenStrings[index] ||
+      tokenizer.decode([id], {
+        skip_special_tokens: false,
+        clean_up_tokenization_spaces: false,
+      }) ||
+      `[${id}]`,
+    isSpecial: specialIds.has(Number(id)),
+    attended: Number(attentionMask[index] ?? 1) === 1,
+  }));
+}
+
+async function runTextEmbedding(text, { includeDiagnostics = false } = {}) {
+  const cleanedText = typeof text === "string" ? text.trim() : "";
+
+  if (!cleanedText) {
+    throw new Error("Text is required to generate an embedding.");
+  }
+
+  const { model, tokenizer } = await getPipeline();
+  const rawTokenIds = tokenizer.encode(cleanedText, { add_special_tokens: true });
+  const rawTokenStrings = tokenizer.tokenize(cleanedText, {
+    add_special_tokens: true,
+  });
+  const modelInputs = await tokenizer([cleanedText], { padding: true, truncation: true });
+  const output = await model(modelInputs);
+  const extracted = extractTextEmbeddingOutput(output);
+
+  if (!includeDiagnostics) {
+    return extracted;
+  }
+
+  const inputIds = tensorRowToArray(modelInputs.input_ids) || rawTokenIds.map((id) => Number(id));
+  const attentionMask =
+    tensorRowToArray(modelInputs.attention_mask) ||
+    inputIds.map(() => 1);
+  const tokens = buildTokenDiagnostics({
+    tokenizer,
+    inputIds,
+    tokenStrings: rawTokenStrings,
+    attentionMask,
+  });
+  const embeddingStats = summarizeVector(extracted.vector);
+  const truncatedTokenCount = Math.max(0, rawTokenIds.length - inputIds.length);
+
+  return {
+    ...extracted,
+    diagnostics: {
+      queryText: cleanedText,
+      modelUsed: MODEL_ID,
+      generatedAt: new Date().toISOString(),
+      tokenization: {
+        tokens,
+        totalTokens: tokens.length,
+        specialTokenCount: tokens.filter((token) => token.isSpecial).length,
+        attendedTokenCount: attentionMask.filter((value) => Number(value) === 1).length,
+        truncatedTokenCount,
+        hasPadding: attentionMask.some((value) => Number(value) === 0),
+        attentionMask,
+      },
+      tensors: {
+        inputIdsShape: modelInputs.input_ids?.dims || [1, inputIds.length],
+        attentionMaskShape: modelInputs.attention_mask?.dims || [1, attentionMask.length],
+        embeddingShape: extracted.tensor?.dims || [1, extracted.vector.length],
+        hiddenStateShape: output.last_hidden_state?.dims || null,
+        embeddingSource: extracted.source,
+      },
+      embedding: {
+        dimension: extracted.vector.length,
+        ...embeddingStats,
+      },
+    },
+  };
+}
+
+/*
+ * Generates a 1024-dimensional text embedding using jina-clip-v2.
+ *
+ * The model outputs 1024 dims natively, matching the schema column size.
+ */
+async function generateTextEmbedding(text) {
+  const result = await runTextEmbedding(text);
+  return result.vector;
 }
 
 /*
@@ -321,6 +465,32 @@ async function resolveTextSearchEmbedding(payload) {
   );
 }
 
+async function inspectTextEmbedding(payload) {
+  if (payload.vector) {
+    const finalized = finalizeEmbeddingResult(payload.vector, payload.modelUsed);
+    return {
+      ...finalized,
+      diagnostics: null,
+      queryText: payload.queryText || null,
+    };
+  }
+
+  if (!payload.queryText) {
+    throw new Error("Missing `queryText` for text inspection.");
+  }
+
+  const result = await runTextEmbedding(payload.queryText, {
+    includeDiagnostics: true,
+  });
+  const finalized = finalizeEmbeddingResult(result.vector, MODEL_ID);
+
+  return {
+    ...finalized,
+    diagnostics: result.diagnostics,
+    queryText: payload.queryText,
+  };
+}
+
 /*
  * Used by image similarity search routes.
  */
@@ -345,6 +515,7 @@ async function resolveImageSearchEmbedding(payload) {
 module.exports = {
   EMBEDDING_DIMENSION,
   getPipeline,
+  inspectTextEmbedding,
   resolveImageSearchEmbedding,
   resolveStoredEmbedding,
   resolveTextSearchEmbedding,

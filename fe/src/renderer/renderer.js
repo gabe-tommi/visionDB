@@ -8,6 +8,17 @@ const uploadButton = document.getElementById("upload-button");
 const thresholdSlider = document.getElementById("threshold-slider");
 const thresholdValue = document.getElementById("threshold-value");
 const resultsEl = document.getElementById("results");
+
+const processRefreshButton = document.getElementById("process-refresh-button");
+const processStatus = document.getElementById("process-status");
+const processSummary = document.getElementById("process-summary");
+const processStepper = document.getElementById("process-stepper");
+const processDetail = document.getElementById("process-detail");
+const tokenList = document.getElementById("token-list");
+const tokenDetail = document.getElementById("token-detail");
+const vectorPreview = document.getElementById("vector-preview");
+const vectorStats = document.getElementById("vector-stats");
+
 const mapMethod = document.getElementById("map-method");
 const mapLimit = document.getElementById("map-limit");
 const mapButton = document.getElementById("map-button");
@@ -15,13 +26,19 @@ const mapStatus = document.getElementById("map-status");
 const mapCanvas = document.getElementById("map-canvas");
 const mapTooltip = document.getElementById("map-tooltip");
 const clusterLegend = document.getElementById("cluster-legend");
+
+const cosineCanvas = document.getElementById("cosine-canvas");
+const cosineDescription = document.getElementById("cosine-description");
+const cosineMetrics = document.getElementById("cosine-metrics");
+const cosineFormula = document.getElementById("cosine-formula");
+const cosineControlsA = document.getElementById("cosine-controls-a");
+const cosineControlsB = document.getElementById("cosine-controls-b");
+const cosinePresetButtons = Array.from(
+  document.querySelectorAll("[data-cosine-preset]")
+);
+
 const viewTabs = Array.from(document.querySelectorAll("[data-tab-target]"));
 const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
-
-let lastQueryText = "";
-let mapPoints = [];
-let mapData = [];
-let returnedResultImageIds = new Set();
 
 const CLUSTER_COLORS = [
   "#2563eb",
@@ -37,6 +54,45 @@ const CLUSTER_COLORS = [
 ];
 
 const MAX_CLUSTER_COUNT = CLUSTER_COLORS.length;
+const PROCESS_STEP_IDS = ["tokenize", "tensorize", "encode", "normalize"];
+const COSINE_AXES = [
+  { key: "x", label: "X" },
+  { key: "y", label: "Y" },
+  { key: "z", label: "Z" },
+];
+const COSINE_LIMIT = 3;
+const COSINE_PRESETS = {
+  identical: {
+    a: { x: 1.6, y: 0.9, z: -0.5 },
+    b: { x: 1.6, y: 0.9, z: -0.5 },
+  },
+  orthogonal: {
+    a: { x: 1, y: 0, z: 0 },
+    b: { x: 0, y: 1, z: 0 },
+  },
+  opposite: {
+    a: { x: 1.2, y: -0.8, z: 0.7 },
+    b: { x: -1.2, y: 0.8, z: -0.7 },
+  },
+  nearby: {
+    a: { x: 1.8, y: 0.8, z: -0.2 },
+    b: { x: 1.2, y: 1.1, z: 0.3 },
+  },
+};
+
+let lastQueryText = "";
+let lastQueryVector = null;
+let lastQueryProcess = null;
+let activeProcessStepId = PROCESS_STEP_IDS[0];
+let selectedProcessTokenIndex = 0;
+let mapPoints = [];
+let mapData = [];
+let returnedResultImageIds = new Set();
+let cosineVectors = JSON.parse(JSON.stringify(COSINE_PRESETS.nearby));
+const cosineControlRefs = {
+  a: {},
+  b: {},
+};
 
 function setStatus(message) {
   if (statusEl) {
@@ -45,6 +101,10 @@ function setStatus(message) {
 }
 
 function setUploadButtonState(isUploading, total = 0) {
+  if (!uploadButton) {
+    return;
+  }
+
   uploadButton.disabled = isUploading;
   uploadButton.classList.toggle("is-uploading", isUploading);
 
@@ -71,8 +131,62 @@ function setMapStatus(message) {
   }
 }
 
+function setProcessStatus(message) {
+  if (processStatus) {
+    processStatus.textContent = message;
+  }
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function formatThreshold(value) {
   return Number(value).toFixed(2);
+}
+
+function formatNumber(value, digits = 3) {
+  return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "Unavailable";
+}
+
+function formatSignedNumber(value, digits = 3) {
+  if (!Number.isFinite(Number(value))) {
+    return "Unavailable";
+  }
+
+  const numericValue = Number(value);
+  return `${numericValue >= 0 ? "+" : ""}${numericValue.toFixed(digits)}`;
+}
+
+function formatPercent(value, digits = 1) {
+  return Number.isFinite(Number(value))
+    ? `${(Number(value) * 100).toFixed(digits)}%`
+    : "Unavailable";
+}
+
+function formatShape(shape) {
+  if (!Array.isArray(shape) || !shape.length) {
+    return "Unavailable";
+  }
+
+  return `[${shape.join(" x ")}]`;
+}
+
+function truncateText(text, maxLength = 38) {
+  if (typeof text !== "string" || text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength - 1)}...`;
+}
+
+function formatTokenText(text) {
+  if (typeof text !== "string") {
+    return "<?>"; 
+  }
+
+  const visible = text.replace(/ /g, "␠").replace(/\n/g, "↵");
+  return visible || "(blank)";
 }
 
 function getSimilarityThreshold() {
@@ -108,10 +222,6 @@ function formatSimilarity(value) {
   }
 
   return `${Math.round(value * 100)}% match`;
-}
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
 }
 
 function normalizeSimilarityValue(point) {
@@ -154,19 +264,19 @@ function formatEmbeddingSummary(embedding, index) {
   return parts.join(" • ");
 }
 
-function ensureCanvasSize() {
-  if (!mapCanvas) {
+function ensureCanvasSize(canvasElement) {
+  if (!canvasElement) {
     return false;
   }
 
-  const rect = mapCanvas.getBoundingClientRect();
+  const rect = canvasElement.getBoundingClientRect();
   if (!rect.width || !rect.height) {
     return false;
   }
 
   const dpr = window.devicePixelRatio || 1;
-  mapCanvas.width = Math.max(1, Math.floor(rect.width * dpr));
-  mapCanvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  canvasElement.width = Math.max(1, Math.floor(rect.width * dpr));
+  canvasElement.height = Math.max(1, Math.floor(rect.height * dpr));
   return true;
 }
 
@@ -204,13 +314,16 @@ function initializeCentroids(points, clusterCount) {
   const centroids = [sorted[Math.floor(sorted.length / 2)]];
 
   while (centroids.length < clusterCount) {
-    const next = sorted.reduce((best, point) => {
-      const distance = Math.min(
-        ...centroids.map((centroid) => squaredDistance(point, centroid))
-      );
+    const next = sorted.reduce(
+      (best, point) => {
+        const distance = Math.min(
+          ...centroids.map((centroid) => squaredDistance(point, centroid))
+        );
 
-      return distance > best.distance ? { point, distance } : best;
-    }, { point: sorted[0], distance: -1 });
+        return distance > best.distance ? { point, distance } : best;
+      },
+      { point: sorted[0], distance: -1 }
+    );
 
     centroids.push(next.point);
   }
@@ -398,7 +511,7 @@ function renderMap(points = mapData) {
   const currentPoints = Array.isArray(points) ? points : [];
   mapData = currentPoints;
 
-  if (!ensureCanvasSize()) {
+  if (!ensureCanvasSize(mapCanvas)) {
     return;
   }
 
@@ -441,10 +554,8 @@ function renderMap(points = mapData) {
   ctx.rect(padding, padding, width - padding * 2, height - padding * 2);
   ctx.stroke();
 
-  const axisX =
-    minX <= 0 && maxX >= 0 ? scaleX(0) : padding;
-  const axisY =
-    minY <= 0 && maxY >= 0 ? scaleY(0) : height - padding;
+  const axisX = minX <= 0 && maxX >= 0 ? scaleX(0) : padding;
+  const axisY = minY <= 0 && maxY >= 0 ? scaleY(0) : height - padding;
 
   ctx.strokeStyle = "rgba(13, 26, 53, 0.25)";
   ctx.lineWidth = 1.5;
@@ -458,8 +569,8 @@ function renderMap(points = mapData) {
   ctx.fillStyle = "rgba(13, 26, 53, 0.6)";
   ctx.font = "12px 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif";
   const tickCount = 5;
-  for (let i = 0; i <= tickCount; i += 1) {
-    const t = i / tickCount;
+  for (let index = 0; index <= tickCount; index += 1) {
+    const t = index / tickCount;
     const xValue = minX + t * spanX;
     const yValue = minY + t * spanY;
     const xPos = padding + t * (width - padding * 2);
@@ -484,12 +595,14 @@ function renderMap(points = mapData) {
     return {
       ...point,
       plotIndex: index,
-      isReturnedResult: point.kind !== "query" && returnedResultImageIds.has(point.id),
+      isReturnedResult:
+        point.kind !== "query" && returnedResultImageIds.has(point.id),
       similarity,
       screenX: scaleX(point.x) / dpr,
       screenY: scaleY(point.y) / dpr,
     };
   });
+
   const clustered = clusterMapPoints(plotted);
   updateClusterLegend(clustered.clusters);
 
@@ -553,24 +666,6 @@ function handleMapHover(event) {
     showTooltip(hit, event);
   } else {
     hideTooltip();
-  }
-}
-
-function activateTab(targetId) {
-  viewTabs.forEach((tab) => {
-    const isActive = tab.dataset.tabTarget === targetId;
-    tab.classList.toggle("is-active", isActive);
-    tab.setAttribute("aria-selected", String(isActive));
-  });
-
-  tabPanels.forEach((panel) => {
-    const isActive = panel.id === targetId;
-    panel.classList.toggle("is-active", isActive);
-    panel.hidden = !isActive;
-  });
-
-  if (targetId === "embedding-map-panel") {
-    renderMap(mapData);
   }
 }
 
@@ -693,119 +788,928 @@ async function parseJsonResponse(response) {
   return result;
 }
 
-queryButton.addEventListener("click", () => {
-  const fileInput = document.createElement("input");
-  fileInput.type = "file";
-  fileInput.accept = "image/*";
-  fileInput.onchange = async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-    
-    const formData = new FormData();
-    formData.append("image", file);
-    clearResults();
-    setStatus("Searching by image...");
-    
-    try {
-      const threshold = getSimilarityThreshold();
-      const searchParams = new URLSearchParams({
-        within: String(threshold),
-      });
-      const response = await fetch(
-        `${API_BASE_URL}/get-image-by-image?${searchParams.toString()}`,
-        {
-          method: "POST",
-          body: formData
-        }
-      );
-      const result = await parseJsonResponse(response);
-      console.log("Result:", result);
-      renderResults(result.matches);
-      setStatus(formatSearchSummary(result));
-    } catch (error) {
-      console.error("Error:", error);
-      setStatus(error.message || "Error processing image");
-    }
-  };
-  fileInput.click();
-});
+function createPlaceholderParagraph(text) {
+  const placeholder = document.createElement("p");
+  placeholder.className = "process-placeholder";
+  placeholder.textContent = text;
+  return placeholder;
+}
 
-uploadButton.addEventListener("click", () => {
-  const fileInput = document.createElement("input");
-  fileInput.type = "file";
-  fileInput.accept = "image/*";
-  fileInput.multiple = true;
-
-  fileInput.onchange = async (event) => {
-    const files = Array.from(event.target.files || []);
-    if (!files.length) {
-      return;
-    }
-
-    const formData = new FormData();
-    files.forEach((file) => formData.append("images", file, file.name));
-
-    setUploadButtonState(true, files.length);
-    setStatus(`Uploading ${files.length} image${files.length === 1 ? "" : "s"}...`);
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/images/upload`, {
-        method: "POST",
-        body: formData,
-      });
-      const result = await response.json();
-      const summary = `${result.uploaded || 0} uploaded, ${result.failed || 0} failed.`;
-
-      if (!response.ok) {
-        throw new Error(result.error || summary || "Upload failed.");
-      }
-
-      console.log("Upload result:", result);
-      setStatus(summary);
-    } catch (error) {
-      console.error("Upload error:", error);
-      setStatus(error.message || "Error uploading images");
-    } finally {
-      setUploadButtonState(false);
-    }
-  };
-
-  fileInput.click();
-});
-
-queryInput.addEventListener("keypress", async (event) => {
-  if (event.key === "Enter") {
-    const query = queryInput.value;
-    if (!query) return;
-
-    clearResults();
-    setStatus("Searching by text...");
-
-    try {
-      const threshold = getSimilarityThreshold();
-      const response = await fetch(`${API_BASE_URL}/get-image-by-text`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ queryText: query, within: threshold })
-      });
-      const result = await parseJsonResponse(response);
-      console.log("Result:", result);
-      renderResults(result.matches);
-      setStatus(formatSearchSummary(result));
-      lastQueryText = query;
-      await runVisualization(query);
-    } catch (error) {
-      console.error("Error:", error);
-      setStatus(error.message || "Error processing search");
-    }
-
+function getProcessStepDescriptors(process) {
+  if (!process) {
+    return [];
   }
-});
 
-async function runVisualization(queryText) {
-  if (!queryText) {
+  const tokenization = process.tokenization || {};
+  const tensors = process.tensors || {};
+  const embedding = process.embedding || {};
+
+  return [
+    {
+      id: "tokenize",
+      title: "1. Tokenize query",
+      meta: `${tokenization.totalTokens || 0} tokens`,
+      description: `The tokenizer split "${truncateText(
+        process.queryText || "",
+        64
+      )}" into ${tokenization.totalTokens || 0} smaller pieces that the model can read, including ${
+        tokenization.specialTokenCount || 0
+      } special token${tokenization.specialTokenCount === 1 ? "" : "s"} used for structure.`,
+      whyItMatters:
+        "Models do not read whole sentences the way people do. They first break text into tokens so each piece can be converted into numbers and processed consistently.",
+      stats: [
+        { label: "Characters", value: String((process.queryText || "").length) },
+        { label: "Tokens", value: String(tokenization.totalTokens || 0) },
+        {
+          label: "Special tokens",
+          value: String(tokenization.specialTokenCount || 0),
+        },
+        {
+          label: "Truncated",
+          value:
+            tokenization.truncatedTokenCount > 0
+              ? `${tokenization.truncatedTokenCount} removed`
+              : "No",
+        },
+      ],
+    },
+    {
+      id: "tensorize",
+      title: "2. Build tensors",
+      meta: formatShape(tensors.inputIdsShape),
+      description:
+        "The tokens are converted into arrays of numbers the model can compute on. One array stores token IDs, and another mask tells the model which positions are real query tokens and which would be padding.",
+      whyItMatters:
+        "Neural networks do math on numeric arrays, not raw text. This step is the bridge from readable text into model-ready data structures.",
+      stats: [
+        { label: "Input IDs", value: formatShape(tensors.inputIdsShape) },
+        {
+          label: "Attention mask",
+          value: formatShape(tensors.attentionMaskShape),
+        },
+        {
+          label: "Mask-on tokens",
+          value: String(tokenization.attendedTokenCount || 0),
+        },
+        {
+          label: "Padding used",
+          value: tokenization.hasPadding ? "Yes" : "No",
+        },
+      ],
+    },
+    {
+      id: "encode",
+      title: "3. Encode meaning",
+      meta: process.modelUsed || "Model",
+      description:
+        "Jina CLIP reads the full token sequence together and turns it into a dense vector that captures the query's meaning. That vector lives in the same shared space as your image embeddings.",
+      whyItMatters:
+        "Because text and images land in the same vector space, a text query like 'red shoes' can later be compared directly against stored image vectors.",
+      stats: [
+        { label: "Model", value: process.modelUsed || "Unavailable" },
+        {
+          label: "Embedding source",
+          value: tensors.embeddingSource || "Unavailable",
+        },
+        {
+          label: "Hidden state",
+          value: formatShape(tensors.hiddenStateShape),
+        },
+        {
+          label: "Embedding tensor",
+          value: formatShape(tensors.embeddingShape),
+        },
+      ],
+    },
+    {
+      id: "normalize",
+      title: "4. Normalize vector",
+      meta: `${embedding.dimension || 0} dims`,
+      description:
+        "The final embedding is scaled so its overall length becomes 1 while its direction stays the same. This does not make every value small or force them between 0 and 1. It simply rescales the whole vector evenly.",
+      whyItMatters:
+        "Cosine similarity works best when vectors are compared by direction instead of raw size. Normalization helps 'meaningfully similar' queries rank close together even if their original vector magnitudes were different.",
+      stats: [
+        { label: "Dimensions", value: String(embedding.dimension || 0) },
+        { label: "Vector norm", value: formatNumber(embedding.magnitude, 4) },
+        { label: "Mean value", value: formatSignedNumber(embedding.mean, 4) },
+        {
+          label: "Value range",
+          value: `${formatSignedNumber(embedding.min, 3)} to ${formatSignedNumber(
+            embedding.max,
+            3
+          )}`,
+        },
+      ],
+    },
+  ];
+}
+
+function renderProcessSummary(process) {
+  if (!processSummary) {
+    return;
+  }
+
+  processSummary.replaceChildren();
+
+  if (!process) {
+    processSummary.appendChild(createPlaceholderParagraph("No query analyzed yet."));
+    return;
+  }
+
+  const cards = [
+    {
+      value: truncateText(process.queryText || "", 26),
+      label: "Current query",
+    },
+    {
+      value: String(process.tokenization?.totalTokens || 0),
+      label: "Tokens in sequence",
+    },
+    {
+      value: `${process.embedding?.dimension || 0}D`,
+      label: "Embedding size",
+    },
+    {
+      value: formatNumber(process.embedding?.magnitude, 4),
+      label: "Normalized vector norm",
+    },
+  ];
+
+  cards.forEach((card) => {
+    const article = document.createElement("article");
+    article.className = "process-summary-card";
+    article.title = card.value;
+
+    const value = document.createElement("strong");
+    value.textContent = card.value;
+
+    const label = document.createElement("span");
+    label.textContent = card.label;
+
+    article.append(value, label);
+    processSummary.appendChild(article);
+  });
+}
+
+function renderProcessStepButtons(process) {
+  if (!processStepper) {
+    return;
+  }
+
+  processStepper.replaceChildren();
+
+  const steps = getProcessStepDescriptors(process);
+  if (!steps.length) {
+    processStepper.appendChild(
+      createPlaceholderParagraph("Step controls appear after a query is analyzed.")
+    );
+    return;
+  }
+
+  steps.forEach((step) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "process-step-button";
+    button.classList.toggle("is-active", activeProcessStepId === step.id);
+    button.dataset.processStep = step.id;
+
+    const title = document.createElement("span");
+    title.className = "process-step-title";
+    title.textContent = step.title;
+
+    const meta = document.createElement("span");
+    meta.className = "process-step-meta";
+    meta.textContent = step.meta;
+
+    button.append(title, meta);
+    button.addEventListener("click", () => {
+      activeProcessStepId = step.id;
+      renderProcessStepButtons(lastQueryProcess);
+      renderProcessDetail(lastQueryProcess);
+    });
+
+    processStepper.appendChild(button);
+  });
+}
+
+function renderProcessDetail(process) {
+  if (!processDetail) {
+    return;
+  }
+
+  processDetail.replaceChildren();
+
+  const steps = getProcessStepDescriptors(process);
+  const step =
+    steps.find((item) => item.id === activeProcessStepId) || steps[0];
+
+  if (!step) {
+    processDetail.appendChild(
+      createPlaceholderParagraph("Choose a step after analyzing a query.")
+    );
+    return;
+  }
+
+  activeProcessStepId = step.id;
+
+  const header = document.createElement("div");
+  header.className = "process-detail-header";
+
+  const title = document.createElement("h3");
+  title.textContent = step.title;
+
+  const description = document.createElement("p");
+  description.textContent = step.description;
+
+  header.append(title, description);
+
+  if (step.whyItMatters) {
+    const explanation = document.createElement("p");
+    explanation.textContent = `Why it matters: ${step.whyItMatters}`;
+    header.appendChild(explanation);
+  }
+
+  const stats = document.createElement("div");
+  stats.className = "process-detail-stats";
+
+  step.stats.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "process-stat-card";
+
+    const value = document.createElement("strong");
+    value.textContent = item.value;
+
+    const label = document.createElement("span");
+    label.textContent = item.label;
+
+    card.append(value, label);
+    stats.appendChild(card);
+  });
+
+  processDetail.append(header, stats);
+}
+
+function renderTokenDetail(process) {
+  if (!tokenDetail) {
+    return;
+  }
+
+  tokenDetail.replaceChildren();
+
+  const tokens = process?.tokenization?.tokens || [];
+  const token = tokens[selectedProcessTokenIndex];
+
+  if (!token) {
+    tokenDetail.appendChild(
+      createPlaceholderParagraph("Token details appear after you select a token.")
+    );
+    return;
+  }
+
+  const tokenBadge = document.createElement("div");
+  tokenBadge.className = "token-detail-token";
+  tokenBadge.textContent = formatTokenText(token.text);
+
+  const subtitle = document.createElement("p");
+  subtitle.className = "process-note";
+  subtitle.textContent = token.isSpecial
+    ? "Special tokens help mark sequence boundaries or model-specific structure."
+    : "Regular token emitted by the tokenizer for this query. This is diagnostic metadata, not a token-weight score.";
+
+  const grid = document.createElement("div");
+  grid.className = "token-detail-grid";
+
+  const items = [
+    { label: "Token index", value: String(token.index) },
+    { label: "Token ID", value: String(token.id) },
+    { label: "Mask on", value: token.attended ? "Yes" : "No" },
+    { label: "Special token", value: token.isSpecial ? "Yes" : "No" },
+  ];
+
+  items.forEach((item) => {
+    const card = document.createElement("div");
+    card.className = "token-detail-item";
+
+    const label = document.createElement("strong");
+    label.textContent = item.label;
+
+    const value = document.createElement("span");
+    value.textContent = item.value;
+
+    card.append(label, value);
+    grid.appendChild(card);
+  });
+
+  tokenDetail.append(tokenBadge, subtitle, grid);
+}
+
+function renderTokenList(process) {
+  if (!tokenList) {
+    return;
+  }
+
+  tokenList.replaceChildren();
+
+  const tokens = process?.tokenization?.tokens || [];
+  if (!tokens.length) {
+    tokenList.appendChild(
+      createPlaceholderParagraph("Tokens appear here after analyzing a text query.")
+    );
+    renderTokenDetail(process);
+    return;
+  }
+
+  selectedProcessTokenIndex = clamp(selectedProcessTokenIndex, 0, tokens.length - 1);
+
+  tokens.forEach((token) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "token-chip";
+    button.classList.toggle("is-special", token.isSpecial);
+    button.classList.toggle("is-selected", token.index === selectedProcessTokenIndex);
+
+    const index = document.createElement("span");
+    index.className = "token-index";
+    index.textContent = `#${token.index}`;
+
+    const text = document.createElement("span");
+    text.className = "token-text";
+    text.textContent = formatTokenText(token.text);
+
+    button.title = `Token ${token.index} • id ${token.id}`;
+    button.append(index, text);
+    button.addEventListener("click", () => {
+      selectedProcessTokenIndex = token.index;
+      renderTokenList(process);
+      renderTokenDetail(process);
+    });
+
+    tokenList.appendChild(button);
+  });
+
+  renderTokenDetail(process);
+}
+
+function renderVectorPreview(process) {
+  if (!vectorPreview || !vectorStats) {
+    return;
+  }
+
+  vectorPreview.replaceChildren();
+  vectorStats.replaceChildren();
+
+  const embedding = process?.embedding;
+  if (!embedding?.preview?.length) {
+    vectorPreview.appendChild(
+      createPlaceholderParagraph("Vector preview appears after a query is analyzed.")
+    );
+    vectorStats.appendChild(
+      createPlaceholderParagraph("Vector statistics appear after a query is analyzed.")
+    );
+    return;
+  }
+
+  const previewValues = embedding.preview;
+  const maxAbs = Math.max(...previewValues.map((value) => Math.abs(value))) || 1;
+
+  previewValues.forEach((value, index) => {
+    const item = document.createElement("div");
+    item.className = "vector-bar";
+
+    const fill = document.createElement("div");
+    fill.className = "vector-bar-fill";
+    fill.classList.toggle("is-negative", value < 0);
+    fill.style.height = `${Math.max(12, (Math.abs(value) / maxAbs) * 150)}px`;
+    fill.title = `Dimension ${index}: ${formatSignedNumber(value, 4)}`;
+
+    const label = document.createElement("span");
+    label.className = "vector-bar-label";
+    label.textContent = index;
+
+    item.append(fill, label);
+    vectorPreview.appendChild(item);
+  });
+
+  const statCards = [
+    { value: formatSignedNumber(embedding.mean, 4), label: "Mean value" },
+    {
+      value: `${embedding.positiveCount || 0}/${embedding.negativeCount || 0}`,
+      label: "Positive / negative dims",
+    },
+    {
+      value: `${formatSignedNumber(embedding.min, 3)} to ${formatSignedNumber(
+        embedding.max,
+        3
+      )}`,
+      label: "Min / max range",
+    },
+  ];
+
+  statCards.forEach((cardInfo) => {
+    const card = document.createElement("article");
+    card.className = "process-stat-card";
+
+    const value = document.createElement("strong");
+    value.textContent = cardInfo.value;
+
+    const label = document.createElement("span");
+    label.textContent = cardInfo.label;
+
+    card.append(value, label);
+    vectorStats.appendChild(card);
+  });
+
+  const topDimensionsCard = document.createElement("article");
+  topDimensionsCard.className = "process-stat-card";
+  topDimensionsCard.style.gridColumn = "1 / -1";
+
+  const heading = document.createElement("strong");
+  heading.textContent = "Top dimensions";
+
+  const label = document.createElement("span");
+  label.textContent = "Largest values by absolute magnitude in the current query vector.";
+
+  const pills = document.createElement("div");
+  pills.className = "top-dimensions";
+
+  (embedding.topDimensions || []).forEach((dimension) => {
+    const pill = document.createElement("span");
+    pill.className = "dimension-pill";
+    pill.textContent = `d${dimension.index}: ${formatSignedNumber(dimension.value, 4)}`;
+    pills.appendChild(pill);
+  });
+
+  topDimensionsCard.append(heading, label, pills);
+  vectorStats.appendChild(topDimensionsCard);
+}
+
+function renderProcessInspector(process) {
+  renderProcessSummary(process);
+  renderProcessStepButtons(process);
+  renderProcessDetail(process);
+  renderTokenList(process);
+  renderVectorPreview(process);
+}
+
+function storeProcessResponse(result) {
+  const queryEmbedding = result?.queryEmbedding;
+
+  if (queryEmbedding?.queryText) {
+    lastQueryText = queryEmbedding.queryText;
+  }
+
+  if (Array.isArray(queryEmbedding?.vector)) {
+    lastQueryVector = queryEmbedding.vector;
+  }
+
+  if (result?.process) {
+    lastQueryProcess = result.process;
+    selectedProcessTokenIndex = 0;
+    renderProcessInspector(lastQueryProcess);
+    setProcessStatus(
+      `Inspected ${lastQueryProcess.tokenization?.totalTokens || 0} tokens and a ${
+        lastQueryProcess.embedding?.dimension || 0
+      }D embedding.`
+    );
+  }
+}
+
+async function inspectCurrentQuery(queryText = queryInput?.value || lastQueryText) {
+  const cleaned = typeof queryText === "string" ? queryText.trim() : "";
+
+  if (!cleaned) {
+    setProcessStatus("Enter a text query before inspecting tokenization and vector-generation diagnostics.");
+    return;
+  }
+
+  setProcessStatus("Inspecting tokenization and vector-generation diagnostics...");
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/images/process/text`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ queryText: cleaned }),
+    });
+
+    const result = await parseJsonResponse(response);
+    storeProcessResponse(result);
+  } catch (error) {
+    console.error("Process inspection error:", error);
+    setProcessStatus(error.message || "Unable to inspect this query.");
+  }
+}
+
+function dotProduct(a, b) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function magnitude(vector) {
+  return Math.sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
+}
+
+function cosineSimilarity(a, b) {
+  const magnitudeA = magnitude(a);
+  const magnitudeB = magnitude(b);
+
+  if (!magnitudeA || !magnitudeB) {
+    return null;
+  }
+
+  return clamp(dotProduct(a, b) / (magnitudeA * magnitudeB), -1, 1);
+}
+
+function describeCosineRelationship(value) {
+  if (value === null) {
+    return "Cosine similarity is undefined when one of the vectors has zero magnitude.";
+  }
+
+  if (value > 0.95) {
+    return "The vectors point in almost the same direction.";
+  }
+
+  if (value > 0.5) {
+    return "The vectors share a broadly similar direction.";
+  }
+
+  if (value > 0.1) {
+    return "The vectors are only mildly aligned.";
+  }
+
+  if (value > -0.1) {
+    return "The vectors are close to orthogonal, so they share very little directional overlap.";
+  }
+
+  if (value > -0.6) {
+    return "The vectors trend away from each other.";
+  }
+
+  return "The vectors point in strongly opposite directions.";
+}
+
+function project3DPoint(point, width, height, scale) {
+  const centerX = width / 2;
+  const centerY = height / 2 + scale * 0.2;
+  const projectedX = (point.x - point.z * 0.58) * scale;
+  const projectedY = (point.y + point.x * 0.12 + point.z * 0.34) * scale;
+
+  return {
+    x: centerX + projectedX,
+    y: centerY - projectedY,
+  };
+}
+
+function drawArrow(ctx, from, to, color, width, label, dpr) {
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(to.x, to.y);
+  ctx.stroke();
+
+  const angle = Math.atan2(to.y - from.y, to.x - from.x);
+  const headLength = 10 * dpr;
+
+  ctx.beginPath();
+  ctx.moveTo(to.x, to.y);
+  ctx.lineTo(
+    to.x - headLength * Math.cos(angle - Math.PI / 7),
+    to.y - headLength * Math.sin(angle - Math.PI / 7)
+  );
+  ctx.lineTo(
+    to.x - headLength * Math.cos(angle + Math.PI / 7),
+    to.y - headLength * Math.sin(angle + Math.PI / 7)
+  );
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(to.x, to.y, 5 * dpr, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = color;
+  ctx.font = `${13 * dpr}px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif`;
+  ctx.fillText(label, to.x + 8 * dpr, to.y - 8 * dpr);
+}
+
+function renderCosineMetricsDisplay(metrics) {
+  if (!cosineMetrics) {
+    return;
+  }
+
+  cosineMetrics.replaceChildren();
+
+  const cards = [
+    {
+      value:
+        metrics.cosine === null ? "Undefined" : formatNumber(metrics.cosine, 3),
+      label: "Cosine similarity",
+    },
+    {
+      value:
+        metrics.angleDegrees === null
+          ? "Undefined"
+          : `${formatNumber(metrics.angleDegrees, 1)}°`,
+      label: "Angle between vectors",
+    },
+    {
+      value: formatSignedNumber(metrics.dot, 3),
+      label: "Dot product",
+    },
+    {
+      value: formatNumber(metrics.magnitudeA, 3),
+      label: "Magnitude of A",
+    },
+    {
+      value: formatNumber(metrics.magnitudeB, 3),
+      label: "Magnitude of B",
+    },
+  ];
+
+  cards.forEach((cardInfo) => {
+    const card = document.createElement("article");
+    card.className = "cosine-metric-card";
+
+    const value = document.createElement("strong");
+    value.textContent = cardInfo.value;
+
+    const label = document.createElement("span");
+    label.textContent = cardInfo.label;
+
+    card.append(value, label);
+    cosineMetrics.appendChild(card);
+  });
+}
+
+function renderCosineFormulaDisplay(metrics) {
+  if (!cosineFormula) {
+    return;
+  }
+
+  cosineFormula.replaceChildren();
+
+  const lines = [
+    `A = [${formatNumber(cosineVectors.a.x, 1)}, ${formatNumber(
+      cosineVectors.a.y,
+      1
+    )}, ${formatNumber(cosineVectors.a.z, 1)}]`,
+    `B = [${formatNumber(cosineVectors.b.x, 1)}, ${formatNumber(
+      cosineVectors.b.y,
+      1
+    )}, ${formatNumber(cosineVectors.b.z, 1)}]`,
+    `A·B = (${formatNumber(cosineVectors.a.x, 1)} * ${formatNumber(
+      cosineVectors.b.x,
+      1
+    )}) + (${formatNumber(cosineVectors.a.y, 1)} * ${formatNumber(
+      cosineVectors.b.y,
+      1
+    )}) + (${formatNumber(cosineVectors.a.z, 1)} * ${formatNumber(
+      cosineVectors.b.z,
+      1
+    )}) = ${formatSignedNumber(metrics.dot, 3)}`,
+    `|A| = sqrt(${formatNumber(cosineVectors.a.x * cosineVectors.a.x, 2)} + ${formatNumber(
+      cosineVectors.a.y * cosineVectors.a.y,
+      2
+    )} + ${formatNumber(cosineVectors.a.z * cosineVectors.a.z, 2)}) = ${formatNumber(
+      metrics.magnitudeA,
+      3
+    )}`,
+    `|B| = sqrt(${formatNumber(cosineVectors.b.x * cosineVectors.b.x, 2)} + ${formatNumber(
+      cosineVectors.b.y * cosineVectors.b.y,
+      2
+    )} + ${formatNumber(cosineVectors.b.z * cosineVectors.b.z, 2)}) = ${formatNumber(
+      metrics.magnitudeB,
+      3
+    )}`,
+    metrics.cosine === null
+      ? "cos(theta) is undefined because one vector has zero length."
+      : `cos(theta) = ${formatSignedNumber(metrics.dot, 3)} / (${formatNumber(
+          metrics.magnitudeA,
+          3
+        )} * ${formatNumber(metrics.magnitudeB, 3)}) = ${formatNumber(
+          metrics.cosine,
+          3
+        )}`,
+  ];
+
+  lines.forEach((text) => {
+    const line = document.createElement("p");
+    line.className = "formula-line";
+    line.textContent = text;
+    cosineFormula.appendChild(line);
+  });
+}
+
+function renderCosineLab() {
+  const metrics = {
+    dot: dotProduct(cosineVectors.a, cosineVectors.b),
+    magnitudeA: magnitude(cosineVectors.a),
+    magnitudeB: magnitude(cosineVectors.b),
+  };
+  metrics.cosine = cosineSimilarity(cosineVectors.a, cosineVectors.b);
+  metrics.angleDegrees =
+    metrics.cosine === null
+      ? null
+      : (Math.acos(clamp(metrics.cosine, -1, 1)) * 180) / Math.PI;
+
+  renderCosineMetricsDisplay(metrics);
+  renderCosineFormulaDisplay(metrics);
+
+  if (cosineDescription) {
+    cosineDescription.textContent = describeCosineRelationship(metrics.cosine);
+  }
+
+  if (!cosineCanvas || !ensureCanvasSize(cosineCanvas)) {
+    return;
+  }
+
+  const ctx = cosineCanvas.getContext("2d");
+  if (!ctx) {
+    return;
+  }
+
+  const dpr = window.devicePixelRatio || 1;
+  const width = cosineCanvas.width;
+  const height = cosineCanvas.height;
+  const scale = Math.min(width, height) / 7.5;
+  const extent = COSINE_LIMIT + 0.2;
+  const origin = project3DPoint({ x: 0, y: 0, z: 0 }, width, height, scale);
+
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#eaf1ff";
+  ctx.fillRect(0, 0, width, height);
+
+  const axisColor = "rgba(13, 26, 53, 0.35)";
+  const gridColor = "rgba(13, 26, 53, 0.12)";
+
+  for (let tick = -COSINE_LIMIT; tick <= COSINE_LIMIT; tick += 1) {
+    const xStart = project3DPoint({ x: tick, y: -extent, z: 0 }, width, height, scale);
+    const xEnd = project3DPoint({ x: tick, y: extent, z: 0 }, width, height, scale);
+    ctx.strokeStyle = gridColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(xStart.x, xStart.y);
+    ctx.lineTo(xEnd.x, xEnd.y);
+    ctx.stroke();
+  }
+
+  const axes = [
+    { label: "X", to: { x: extent, y: 0, z: 0 }, color: axisColor },
+    { label: "Y", to: { x: 0, y: extent, z: 0 }, color: axisColor },
+    { label: "Z", to: { x: 0, y: 0, z: extent }, color: axisColor },
+  ];
+
+  axes.forEach((axis) => {
+    const positive = project3DPoint(axis.to, width, height, scale);
+    const negative = project3DPoint(
+      { x: -axis.to.x, y: -axis.to.y, z: -axis.to.z },
+      width,
+      height,
+      scale
+    );
+
+    ctx.strokeStyle = axis.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(negative.x, negative.y);
+    ctx.lineTo(positive.x, positive.y);
+    ctx.stroke();
+
+    ctx.fillStyle = "#233456";
+    ctx.font = `${13 * dpr}px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif`;
+    ctx.fillText(axis.label, positive.x + 8 * dpr, positive.y - 8 * dpr);
+  });
+
+  ctx.fillStyle = "#111c33";
+  ctx.beginPath();
+  ctx.arc(origin.x, origin.y, 5 * dpr, 0, Math.PI * 2);
+  ctx.fill();
+
+  const pointA = project3DPoint(cosineVectors.a, width, height, scale);
+  const pointB = project3DPoint(cosineVectors.b, width, height, scale);
+
+  drawArrow(ctx, origin, pointA, "#2563eb", 4 * dpr, "A", dpr);
+  drawArrow(ctx, origin, pointB, "#f97316", 4 * dpr, "B", dpr);
+
+  ctx.strokeStyle = "rgba(15, 23, 42, 0.14)";
+  ctx.lineWidth = 2 * dpr;
+  ctx.beginPath();
+  ctx.moveTo(pointA.x, pointA.y);
+  ctx.lineTo(pointB.x, pointB.y);
+  ctx.stroke();
+}
+
+function syncCosineInputs(vectorKey, axisKey) {
+  const refs = cosineControlRefs[vectorKey]?.[axisKey];
+  if (!refs) {
+    return;
+  }
+
+  const value = Number(cosineVectors[vectorKey][axisKey].toFixed(1));
+  refs.range.value = String(value);
+  refs.number.value = String(value);
+}
+
+function setCosineVectorValue(vectorKey, axisKey, nextValue) {
+  const parsed = Number(nextValue);
+  if (!Number.isFinite(parsed)) {
+    return;
+  }
+
+  cosineVectors[vectorKey][axisKey] = clamp(parsed, -COSINE_LIMIT, COSINE_LIMIT);
+  syncCosineInputs(vectorKey, axisKey);
+  renderCosineLab();
+}
+
+function buildCosineControls(vectorKey, container) {
+  if (!container) {
+    return;
+  }
+
+  container.replaceChildren();
+
+  COSINE_AXES.forEach((axis) => {
+    const row = document.createElement("label");
+    row.className = "axis-control";
+
+    const axisLabel = document.createElement("span");
+    axisLabel.className = "axis-label";
+    axisLabel.textContent = axis.label;
+
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min = String(-COSINE_LIMIT);
+    range.max = String(COSINE_LIMIT);
+    range.step = "0.1";
+    range.value = String(cosineVectors[vectorKey][axis.key]);
+
+    const number = document.createElement("input");
+    number.type = "number";
+    number.min = String(-COSINE_LIMIT);
+    number.max = String(COSINE_LIMIT);
+    number.step = "0.1";
+    number.value = String(cosineVectors[vectorKey][axis.key]);
+
+    range.addEventListener("input", (event) => {
+      setCosineVectorValue(vectorKey, axis.key, event.target.value);
+    });
+    number.addEventListener("input", (event) => {
+      setCosineVectorValue(vectorKey, axis.key, event.target.value);
+    });
+
+    cosineControlRefs[vectorKey][axis.key] = { range, number };
+
+    row.append(axisLabel, range, number);
+    container.appendChild(row);
+  });
+}
+
+function applyCosinePreset(presetName) {
+  const preset = COSINE_PRESETS[presetName];
+  if (!preset) {
+    return;
+  }
+
+  cosineVectors = JSON.parse(JSON.stringify(preset));
+
+  ["a", "b"].forEach((vectorKey) => {
+    COSINE_AXES.forEach((axis) => {
+      syncCosineInputs(vectorKey, axis.key);
+    });
+  });
+
+  renderCosineLab();
+}
+
+function activateTab(targetId) {
+  viewTabs.forEach((tab) => {
+    const isActive = tab.dataset.tabTarget === targetId;
+    tab.classList.toggle("is-active", isActive);
+    tab.setAttribute("aria-selected", String(isActive));
+  });
+
+  tabPanels.forEach((panel) => {
+    const isActive = panel.id === targetId;
+    panel.classList.toggle("is-active", isActive);
+    panel.hidden = !isActive;
+  });
+
+  if (targetId === "embedding-map-panel") {
+    renderMap(mapData);
+  }
+
+  if (targetId === "cosine-lab-panel") {
+    renderCosineLab();
+  }
+}
+
+async function runVisualization(queryText, queryVector = lastQueryVector) {
+  const cleanedQuery = typeof queryText === "string" ? queryText.trim() : "";
+
+  if (!cleanedQuery && !Array.isArray(queryVector)) {
     setMapStatus("Enter text to visualize embeddings.");
     return;
   }
@@ -818,17 +1722,23 @@ async function runVisualization(queryText) {
   setMapStatus(`Projecting vectors with ${method.toUpperCase()}...`);
 
   try {
+    const payload = {
+      queryText: cleanedQuery || lastQueryText,
+      limit,
+      method,
+      within: threshold,
+    };
+
+    if (Array.isArray(queryVector)) {
+      payload.vector = queryVector;
+    }
+
     const response = await fetch(`${API_BASE_URL}/images/visualize/text`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        queryText,
-        limit,
-        method,
-        within: threshold,
-      }),
+      body: JSON.stringify(payload),
     });
 
     const result = await parseJsonResponse(response);
@@ -837,7 +1747,9 @@ async function runVisualization(queryText) {
       ? " Backend retried without the threshold because no close matches were found."
       : "";
     setMapStatus(
-      `${result.total || result.points?.length || 0} vectors projected via ${result.method?.toUpperCase() || method.toUpperCase()} with distance threshold ${formatThreshold(result.within ?? threshold)}.${fallback}`
+      `${result.total || result.points?.length || 0} vectors projected via ${
+        result.method?.toUpperCase() || method.toUpperCase()
+      } with distance threshold ${formatThreshold(result.within ?? threshold)}.${fallback}`
     );
   } catch (error) {
     console.error("Visualization error:", error);
@@ -845,10 +1757,138 @@ async function runVisualization(queryText) {
   }
 }
 
+async function runTextSearch(queryText) {
+  const query = typeof queryText === "string" ? queryText.trim() : "";
+  if (!query) {
+    return;
+  }
+
+  clearResults();
+  setStatus("Searching by text...");
+  setProcessStatus("Inspecting tokenization and vector-generation diagnostics...");
+
+  try {
+    const threshold = getSimilarityThreshold();
+    const response = await fetch(`${API_BASE_URL}/get-image-by-text`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ queryText: query, within: threshold }),
+    });
+    const result = await parseJsonResponse(response);
+    renderResults(result.matches);
+    setStatus(formatSearchSummary(result));
+    storeProcessResponse(result);
+    await runVisualization(query, result.queryEmbedding?.vector);
+  } catch (error) {
+    console.error("Error:", error);
+    setStatus(error.message || "Error processing search");
+    setProcessStatus(error.message || "Unable to inspect the current query.");
+  }
+}
+
+if (queryButton) {
+  queryButton.addEventListener("click", () => {
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/*";
+    fileInput.onchange = async (event) => {
+      const file = event.target.files[0];
+      if (!file) {
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("image", file);
+      clearResults();
+      setStatus("Searching by image...");
+
+      try {
+        const threshold = getSimilarityThreshold();
+        const searchParams = new URLSearchParams({
+          within: String(threshold),
+        });
+        const response = await fetch(
+          `${API_BASE_URL}/get-image-by-image?${searchParams.toString()}`,
+          {
+            method: "POST",
+            body: formData,
+          }
+        );
+        const result = await parseJsonResponse(response);
+        renderResults(result.matches);
+        setStatus(formatSearchSummary(result));
+      } catch (error) {
+        console.error("Error:", error);
+        setStatus(error.message || "Error processing image");
+      }
+    };
+    fileInput.click();
+  });
+}
+
+if (uploadButton) {
+  uploadButton.addEventListener("click", () => {
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/*";
+    fileInput.multiple = true;
+
+    fileInput.onchange = async (event) => {
+      const files = Array.from(event.target.files || []);
+      if (!files.length) {
+        return;
+      }
+
+      const formData = new FormData();
+      files.forEach((file) => formData.append("images", file, file.name));
+
+      setUploadButtonState(true, files.length);
+      setStatus(`Uploading ${files.length} image${files.length === 1 ? "" : "s"}...`);
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/images/upload`, {
+          method: "POST",
+          body: formData,
+        });
+        const result = await response.json();
+        const summary = `${result.uploaded || 0} uploaded, ${result.failed || 0} failed.`;
+
+        if (!response.ok) {
+          throw new Error(result.error || summary || "Upload failed.");
+        }
+
+        setStatus(summary);
+      } catch (error) {
+        console.error("Upload error:", error);
+        setStatus(error.message || "Error uploading images");
+      } finally {
+        setUploadButtonState(false);
+      }
+    };
+
+    fileInput.click();
+  });
+}
+
+if (queryInput) {
+  queryInput.addEventListener("keypress", async (event) => {
+    if (event.key === "Enter") {
+      await runTextSearch(queryInput.value);
+    }
+  });
+}
+
+if (processRefreshButton) {
+  processRefreshButton.addEventListener("click", async () => {
+    await inspectCurrentQuery(queryInput?.value || lastQueryText);
+  });
+}
+
 if (mapCanvas) {
   mapCanvas.addEventListener("mousemove", handleMapHover);
   mapCanvas.addEventListener("mouseleave", hideTooltip);
-  window.addEventListener("resize", () => renderMap(mapData));
 }
 
 viewTabs.forEach((tab) => {
@@ -859,14 +1899,14 @@ viewTabs.forEach((tab) => {
 
 if (mapButton) {
   mapButton.addEventListener("click", async () => {
-    await runVisualization(lastQueryText || queryInput.value);
+    await runVisualization(lastQueryText || queryInput?.value, lastQueryVector);
   });
 }
 
 if (mapMethod) {
   mapMethod.addEventListener("change", async () => {
-    if (lastQueryText || queryInput.value) {
-      await runVisualization(lastQueryText || queryInput.value);
+    if (lastQueryText || queryInput?.value) {
+      await runVisualization(lastQueryText || queryInput.value, lastQueryVector);
     }
   });
 }
@@ -875,6 +1915,22 @@ if (thresholdSlider) {
   updateThresholdValue();
   thresholdSlider.addEventListener("input", updateThresholdValue);
 }
+
+cosinePresetButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    applyCosinePreset(button.dataset.cosinePreset);
+  });
+});
+
+buildCosineControls("a", cosineControlsA);
+buildCosineControls("b", cosineControlsB);
+renderProcessInspector(null);
+renderCosineLab();
+
+window.addEventListener("resize", () => {
+  renderMap(mapData);
+  renderCosineLab();
+});
 
 if (appInfo && statusEl) {
   setStatus(`${appInfo.appName} v${appInfo.version} is ready.`);

@@ -9,6 +9,7 @@ const path = require("path");
 const { getFirebaseAuth, getStorageBucket } = require("./firebaseAdmin");
 const {
   getPipeline,
+  inspectTextEmbedding,
   resolveImageSearchEmbedding,
   resolveStoredEmbedding,
   resolveTextSearchEmbedding,
@@ -476,6 +477,7 @@ app.use(attachAuthContext);
  * - create image + embedding
  * - list images
  * - search by text
+ * - inspect tokenization/vector generation for text
  * - search by image
  * - update image and optionally refresh embedding
  * - delete one or many images
@@ -512,7 +514,7 @@ async function handleListImages(req, res) {
 
 async function handleSearchByText(req, res) {
   const payload = getPayload(req);
-  const embedding = await resolveTextSearchEmbedding(payload);
+  const embedding = await inspectTextEmbedding(payload);
   const within = normalizeWithin(payload.within);
   const searchResult = await searchImagesByVectorWithFallback({
     vector: embedding.vector,
@@ -526,6 +528,13 @@ async function handleSearchByText(req, res) {
     within,
     thresholdApplied: searchResult.thresholdApplied,
     thresholdFallback: searchResult.thresholdFallback,
+    queryEmbedding: {
+      queryText: embedding.queryText,
+      vector: embedding.vector,
+      dimension: embedding.dimension,
+      modelUsed: embedding.modelUsed,
+    },
+    process: embedding.diagnostics,
   });
 }
 
@@ -568,6 +577,21 @@ async function handleVisualizeByText(req, res) {
     thresholdApplied: searchResult.thresholdApplied,
     thresholdFallback: searchResult.thresholdFallback,
     points,
+  });
+}
+
+async function handleInspectText(req, res) {
+  const payload = getPayload(req);
+  const embedding = await inspectTextEmbedding(payload);
+
+  res.json({
+    queryEmbedding: {
+      queryText: embedding.queryText,
+      vector: embedding.vector,
+      dimension: embedding.dimension,
+      modelUsed: embedding.modelUsed,
+    },
+    process: embedding.diagnostics,
   });
 }
 
@@ -781,6 +805,7 @@ app.post("/upload-images", asyncHandler(handleUploadImages));
 app.get("/get-all-images", asyncHandler(handleListImages));
 app.all("/get-image-by-image", asyncHandler(handleSearchByImage));
 app.all("/get-image-by-text", asyncHandler(handleSearchByText));
+app.post("/process-text", asyncHandler(handleInspectText));
 app.post("/visualize-text", asyncHandler(handleVisualizeByText));
 app.patch("/update-image", asyncHandler(handleUpdateImage));
 app.delete("/delete-image", asyncHandler(handleDeleteImages));
@@ -790,6 +815,7 @@ app.post("/images/upload", asyncHandler(handleUploadImages));
 app.get("/images", asyncHandler(handleListImages));
 app.post("/images/search/image", asyncHandler(handleSearchByImage));
 app.post("/images/search/text", asyncHandler(handleSearchByText));
+app.post("/images/process/text", asyncHandler(handleInspectText));
 app.post("/images/visualize/text", asyncHandler(handleVisualizeByText));
 app.patch("/images/:id", asyncHandler(handleUpdateImage));
 app.delete("/images/:id", asyncHandler(handleDeleteImages));

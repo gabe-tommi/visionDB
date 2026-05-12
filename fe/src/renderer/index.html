@@ -55,17 +55,78 @@
         <button
           class="view-tab"
           type="button"
+          data-tab-target="process-panel"
+          aria-controls="process-panel"
+          aria-selected="false"
+        >
+          Process
+        </button>
+        <button
+          class="view-tab"
+          type="button"
           data-tab-target="embedding-map-panel"
           aria-controls="embedding-map-panel"
           aria-selected="false"
         >
           Embedding map
         </button>
+        <button
+          class="view-tab"
+          type="button"
+          data-tab-target="cosine-lab-panel"
+          aria-controls="cosine-lab-panel"
+          aria-selected="false"
+        >
+          Cosine Lab
+        </button>
       </nav>
 
       <section id="results-panel" class="tab-panel is-active">
         <div id="results" class="results">
 
+        </div>
+      </section>
+
+      <section id="process-panel" class="panel process-panel tab-panel" hidden>
+        <div class="process-header">
+          <div>
+            <h2>Token diagnostics + vector generation</h2>
+            <p class="process-note">
+              Inspect how a text query becomes tokens, tensors, and a shared 1024-dimensional embedding.
+              This view shows tokenizer and tensor diagnostics, not per-token importance weights from the model.
+            </p>
+          </div>
+          <button id="process-refresh-button" class="secondary-button" type="button">
+            Inspect current query
+          </button>
+        </div>
+        <p id="process-status" class="process-status">
+          Run a text search or inspect the current query to review the embedding pipeline diagnostics.
+        </p>
+        <div id="process-summary" class="process-summary"></div>
+        <div id="process-stepper" class="process-stepper" aria-label="Embedding process steps"></div>
+        <section id="process-detail" class="process-detail"></section>
+        <div class="process-inspector">
+          <section class="process-card">
+            <div class="process-card-header">
+              <div>
+                <h3>Token timeline</h3>
+                <p>Click a token to inspect its encoded form, mask status, and position in the query.</p>
+              </div>
+            </div>
+            <div id="token-list" class="token-list"></div>
+            <div id="token-detail" class="token-detail"></div>
+          </section>
+          <section class="process-card">
+            <div class="process-card-header">
+              <div>
+                <h3>Vector preview</h3>
+                <p>Preview the first 48 dimensions of the normalized query embedding.</p>
+              </div>
+            </div>
+            <div id="vector-preview" class="vector-preview"></div>
+            <div id="vector-stats" class="vector-stats"></div>
+          </section>
         </div>
       </section>
 
@@ -99,6 +160,51 @@
           <canvas id="map-canvas" width="900" height="520"></canvas>
           <div id="map-tooltip" class="map-tooltip" role="status" aria-live="polite"></div>
         </div>
+      </section>
+
+      <section id="cosine-lab-panel" class="panel cosine-lab tab-panel" hidden>
+        <div class="cosine-header">
+          <div>
+            <h2>Cosine Lab</h2>
+            <p class="cosine-note">
+              Adjust two 3D vectors and watch dot product, angle, and cosine similarity update in real time.
+            </p>
+          </div>
+          <div class="cosine-presets" aria-label="Cosine similarity presets">
+            <button class="secondary-button cosine-preset" type="button" data-cosine-preset="identical">Identical</button>
+            <button class="secondary-button cosine-preset" type="button" data-cosine-preset="orthogonal">Orthogonal</button>
+            <button class="secondary-button cosine-preset" type="button" data-cosine-preset="opposite">Opposite</button>
+            <button class="secondary-button cosine-preset" type="button" data-cosine-preset="nearby">Nearby</button>
+          </div>
+        </div>
+        <div class="cosine-lab-grid">
+          <section class="cosine-panel">
+            <div class="cosine-control-groups">
+              <section class="vector-control-card">
+                <div class="vector-control-header">
+                  <h3>Vector A</h3>
+                  <p>Reference direction</p>
+                </div>
+                <div id="cosine-controls-a" class="vector-controls"></div>
+              </section>
+              <section class="vector-control-card">
+                <div class="vector-control-header">
+                  <h3>Vector B</h3>
+                  <p>Comparison direction</p>
+                </div>
+                <div id="cosine-controls-b" class="vector-controls"></div>
+              </section>
+            </div>
+          </section>
+          <section class="cosine-panel cosine-visual-panel">
+            <div class="cosine-canvas-wrap">
+              <canvas id="cosine-canvas" width="900" height="520"></canvas>
+            </div>
+            <p id="cosine-description" class="cosine-description"></p>
+          </section>
+        </div>
+        <div id="cosine-metrics" class="cosine-metrics"></div>
+        <div id="cosine-formula" class="cosine-formula"></div>
       </section>
       
     </main>
