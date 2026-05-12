@@ -90,17 +90,18 @@
       <section id="process-panel" class="panel process-panel tab-panel" hidden>
         <div class="process-header">
           <div>
-            <h2>Tokenization + vector generation</h2>
+            <h2>Token diagnostics + vector generation</h2>
             <p class="process-note">
               Inspect how a text query becomes tokens, tensors, and a shared 1024-dimensional embedding.
+              This view shows tokenizer and tensor diagnostics, not per-token importance weights from the model.
             </p>
           </div>
           <button id="process-refresh-button" class="secondary-button" type="button">
-            Analyze current query
+            Inspect current query
           </button>
         </div>
         <p id="process-status" class="process-status">
-          Run a text search or analyze the current query to inspect the embedding pipeline.
+          Run a text search or inspect the current query to review the embedding pipeline diagnostics.
         </p>
         <div id="process-summary" class="process-summary"></div>
         <div id="process-stepper" class="process-stepper" aria-label="Embedding process steps"></div>
@@ -110,7 +111,7 @@
             <div class="process-card-header">
               <div>
                 <h3>Token timeline</h3>
-                <p>Click a token to inspect its role in the encoded query.</p>
+                <p>Click a token to inspect its encoded form, mask status, and position in the query.</p>
               </div>
             </div>
             <div id="token-list" class="token-list"></div>

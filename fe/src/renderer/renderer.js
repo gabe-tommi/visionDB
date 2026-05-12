@@ -844,7 +844,7 @@ function getProcessStepDescriptors(process) {
           value: formatShape(tensors.attentionMaskShape),
         },
         {
-          label: "Attended tokens",
+          label: "Mask-on tokens",
           value: String(tokenization.attendedTokenCount || 0),
         },
         {
@@ -1061,7 +1061,7 @@ function renderTokenDetail(process) {
   subtitle.className = "process-note";
   subtitle.textContent = token.isSpecial
     ? "Special tokens help mark sequence boundaries or model-specific structure."
-    : "Regular token emitted by the tokenizer for this query.";
+    : "Regular token emitted by the tokenizer for this query. This is diagnostic metadata, not a token-weight score.";
 
   const grid = document.createElement("div");
   grid.className = "token-detail-grid";
@@ -1069,7 +1069,7 @@ function renderTokenDetail(process) {
   const items = [
     { label: "Token index", value: String(token.index) },
     { label: "Token ID", value: String(token.id) },
-    { label: "Attended", value: token.attended ? "Yes" : "No" },
+    { label: "Mask on", value: token.attended ? "Yes" : "No" },
     { label: "Special token", value: token.isSpecial ? "Yes" : "No" },
   ];
 
@@ -1254,7 +1254,7 @@ function storeProcessResponse(result) {
     selectedProcessTokenIndex = 0;
     renderProcessInspector(lastQueryProcess);
     setProcessStatus(
-      `Analyzed ${lastQueryProcess.tokenization?.totalTokens || 0} tokens into a ${
+      `Inspected ${lastQueryProcess.tokenization?.totalTokens || 0} tokens and a ${
         lastQueryProcess.embedding?.dimension || 0
       }D embedding.`
     );
@@ -1265,11 +1265,11 @@ async function inspectCurrentQuery(queryText = queryInput?.value || lastQueryTex
   const cleaned = typeof queryText === "string" ? queryText.trim() : "";
 
   if (!cleaned) {
-    setProcessStatus("Enter a text query before analyzing tokenization and vector generation.");
+    setProcessStatus("Enter a text query before inspecting tokenization and vector-generation diagnostics.");
     return;
   }
 
-  setProcessStatus("Analyzing tokenization and vector generation...");
+  setProcessStatus("Inspecting tokenization and vector-generation diagnostics...");
 
   try {
     const response = await fetch(`${API_BASE_URL}/images/process/text`, {
@@ -1751,7 +1751,7 @@ async function runTextSearch(queryText) {
 
   clearResults();
   setStatus("Searching by text...");
-  setProcessStatus("Analyzing tokenization and vector generation...");
+  setProcessStatus("Inspecting tokenization and vector-generation diagnostics...");
 
   try {
     const threshold = getSimilarityThreshold();
@@ -1770,7 +1770,7 @@ async function runTextSearch(queryText) {
   } catch (error) {
     console.error("Error:", error);
     setStatus(error.message || "Error processing search");
-    setProcessStatus(error.message || "Unable to analyze the current query.");
+    setProcessStatus(error.message || "Unable to inspect the current query.");
   }
 }
 

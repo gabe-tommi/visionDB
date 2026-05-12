@@ -771,11 +771,13 @@ body {
 .vector-control-card {
   display: grid;
   gap: 0.85rem;
+  min-width: 0;
 }
 
 .vector-controls {
   display: grid;
   gap: 0.8rem;
+  min-width: 0;
 }
 
 .axis-control {
@@ -783,16 +785,25 @@ body {
   grid-template-columns: 40px minmax(0, 1fr) 88px;
   gap: 0.75rem;
   align-items: center;
+  min-width: 0;
 }
 
 .axis-label {
   font-weight: 700;
   color: var(--accent-deep);
+  min-width: 0;
 }
 
 .axis-control input[type="range"] {
   width: 100%;
+  min-width: 0;
   accent-color: var(--accent);
+}
+
+.axis-control input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .cosine-visual-panel {
@@ -830,11 +841,13 @@ body {
 
 @media (max-width: 760px) {
   .axis-control {
-    grid-template-columns: 34px 1fr;
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 0.6rem;
   }
 
   .axis-control input[type="number"] {
     grid-column: 1 / -1;
+    width: 100%;
   }
 
   .vector-preview {
