@@ -812,9 +812,11 @@ function getProcessStepDescriptors(process) {
       description: `The tokenizer split "${truncateText(
         process.queryText || "",
         64
-      )}" into ${tokenization.totalTokens || 0} pieces, including ${
+      )}" into ${tokenization.totalTokens || 0} smaller pieces that the model can read, including ${
         tokenization.specialTokenCount || 0
-      } special token${tokenization.specialTokenCount === 1 ? "" : "s"}.`,
+      } special token${tokenization.specialTokenCount === 1 ? "" : "s"} used for structure.`,
+      whyItMatters:
+        "Models do not read whole sentences the way people do. They first break text into tokens so each piece can be converted into numbers and processed consistently.",
       stats: [
         { label: "Characters", value: String((process.queryText || "").length) },
         { label: "Tokens", value: String(tokenization.totalTokens || 0) },
@@ -836,7 +838,9 @@ function getProcessStepDescriptors(process) {
       title: "2. Build tensors",
       meta: formatShape(tensors.inputIdsShape),
       description:
-        "Token IDs and the attention mask are packed into model-ready tensors. These shapes show exactly what the text encoder received.",
+        "The tokens are converted into arrays of numbers the model can compute on. One array stores token IDs, and another mask tells the model which positions are real query tokens and which would be padding.",
+      whyItMatters:
+        "Neural networks do math on numeric arrays, not raw text. This step is the bridge from readable text into model-ready data structures.",
       stats: [
         { label: "Input IDs", value: formatShape(tensors.inputIdsShape) },
         {
@@ -858,7 +862,9 @@ function getProcessStepDescriptors(process) {
       title: "3. Encode meaning",
       meta: process.modelUsed || "Model",
       description:
-        "Jina CLIP's text encoder maps the token sequence into the same shared space used by your image embeddings, which is why text-to-image comparison works later on.",
+        "Jina CLIP reads the full token sequence together and turns it into a dense vector that captures the query's meaning. That vector lives in the same shared space as your image embeddings.",
+      whyItMatters:
+        "Because text and images land in the same vector space, a text query like 'red shoes' can later be compared directly against stored image vectors.",
       stats: [
         { label: "Model", value: process.modelUsed || "Unavailable" },
         {
@@ -880,7 +886,9 @@ function getProcessStepDescriptors(process) {
       title: "4. Normalize vector",
       meta: `${embedding.dimension || 0} dims`,
       description:
-        "The final query vector is normalized so cosine similarity compares direction cleanly, not just raw scale. That makes similarity scores easier to interpret.",
+        "The final embedding is scaled so its overall length becomes 1 while its direction stays the same. This does not make every value small or force them between 0 and 1. It simply rescales the whole vector evenly.",
+      whyItMatters:
+        "Cosine similarity works best when vectors are compared by direction instead of raw size. Normalization helps 'meaningfully similar' queries rank close together even if their original vector magnitudes were different.",
       stats: [
         { label: "Dimensions", value: String(embedding.dimension || 0) },
         { label: "Vector norm", value: formatNumber(embedding.magnitude, 4) },
@@ -1015,6 +1023,12 @@ function renderProcessDetail(process) {
   description.textContent = step.description;
 
   header.append(title, description);
+
+  if (step.whyItMatters) {
+    const explanation = document.createElement("p");
+    explanation.textContent = `Why it matters: ${step.whyItMatters}`;
+    header.appendChild(explanation);
+  }
 
   const stats = document.createElement("div");
   stats.className = "process-detail-stats";
